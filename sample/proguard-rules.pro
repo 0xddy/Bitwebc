@@ -1,0 +1,1 @@
+# Sample app proguard rules.

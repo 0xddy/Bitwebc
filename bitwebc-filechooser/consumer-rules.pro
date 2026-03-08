@@ -1,0 +1,1 @@
+# Bitwebc filechooser consumer rules.
