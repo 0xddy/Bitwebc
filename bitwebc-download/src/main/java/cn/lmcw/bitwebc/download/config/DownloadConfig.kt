@@ -1,5 +1,6 @@
 package cn.lmcw.bitwebc.download.config
 
+import kotlinx.coroutines.CoroutineScope
 import okhttp3.OkHttpClient
 import cn.lmcw.bitwebc.download.storage.DefaultDownloadStorage
 import cn.lmcw.bitwebc.download.storage.DownloadStorage
@@ -19,7 +20,12 @@ data class DownloadConfig(
     /** 仅在使用默认 [DefaultDownloadStorage] 时生效：FileProvider authority */
     val fileProviderAuthority: String = "",
     /** 仅在使用默认 [DefaultDownloadStorage] 时生效：子目录名（可选） */
-    val storageSubDirectory: String? = null
+    val storageSubDirectory: String? = null,
+    /**
+     * 用于收集下载进度并更新通知的协程作用域。为 null 时使用 Activity 的 lifecycleScope（退出界面后不再更新通知）；
+     * 可传入应用级 Scope（如 ProcessLifecycleOwner.get().lifecycleScope）以在后台继续更新通知。
+     */
+    val progressScope: CoroutineScope? = null
 ) {
     /**
      * 解析得到实际使用的 Storage：若未指定则用默认实现，需传入 [fileProviderAuthority]（通常为 packageName + ".bitwebc.fileprovider"）。

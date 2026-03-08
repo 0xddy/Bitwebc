@@ -1,13 +1,16 @@
 package cn.lmcw.bitwebc.core.event
 
 import android.app.Activity
-import java.util.concurrent.ConcurrentHashMap
+import java.util.WeakHashMap
 
 object BitwebcEventCenter {
-    private val hubs = ConcurrentHashMap<Int, BitwebcEventHub>()
+    private val hubs = WeakHashMap<Activity, BitwebcEventHub>()
+    private val lock = Any()
 
     fun hub(activity: Activity): BitwebcEventHub {
-        return hubs.getOrPut(activity.hashCode()) { BitwebcEventHub() }
+        synchronized(lock) {
+            return hubs.getOrPut(activity) { BitwebcEventHub() }
+        }
     }
 
     fun reporter(activity: Activity): (BitwebcEvent) -> Unit {
@@ -16,6 +19,8 @@ object BitwebcEventCenter {
     }
 
     fun clear(activity: Activity) {
-        hubs.remove(activity.hashCode())
+        synchronized(lock) {
+            hubs.remove(activity)
+        }
     }
 }

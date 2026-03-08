@@ -16,10 +16,13 @@ import cn.lmcw.bitwebc.core.event.BitwebcEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -47,6 +50,9 @@ class BitwebcDownloadHandler(
 
     private val taskStateMap = MutableStateFlow<Map<String, DownloadTaskState>>(emptyMap())
 
+    /** 与 Activity 生命周期解耦，支持后台继续下载 */
+    private val downloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private val requests = ConcurrentHashMap<String, DownloadRequest>()
     private val runningJobs = ConcurrentHashMap<String, Job>()
     private val runningCalls = ConcurrentHashMap<String, Call>()
@@ -62,9 +68,12 @@ class BitwebcDownloadHandler(
         pendingPermission = null
     }
 
+    /** 进度通知收集使用的作用域：可配置为应用级以在后台继续更新通知 */
+    private val progressCollectorScope: CoroutineScope = config.progressScope ?: activity.lifecycleScope
+
     init {
         notificationHelper.ensureChannel()
-        activity.lifecycleScope.launch {
+        progressCollectorScope.launch {
             progressFlow
                 .debounce(500)
                 .distinctUntilChanged()
@@ -142,8 +151,8 @@ class BitwebcDownloadHandler(
 
     private fun startTask(taskId: String) {
         val request = requests[taskId] ?: return
-        val job = activity.lifecycleScope.launch {
-            if (!ensureNotificationPermission()) {
+        val job = downloadScope.launch {
+            if (!withContext(Dispatchers.Main.immediate) { ensureNotificationPermission() }) {
                 updateTask(taskId) { it.copy(status = DownloadTaskStatus.FAILED, error = "通知权限被拒绝") }
                 eventReporter?.invoke(BitwebcEvent.DownloadPermissionDenied(taskId))
                 return@launch
@@ -230,12 +239,16 @@ class BitwebcDownloadHandler(
     }
 
     private fun updateTask(taskId: String, value: DownloadTaskState) {
-        taskStateMap.value = taskStateMap.value.toMutableMap().apply { put(taskId, value) }
+        taskStateMap.update { currentMap ->
+            currentMap.toMutableMap().apply { put(taskId, value) }
+        }
     }
 
     private fun updateTask(taskId: String, updater: (DownloadTaskState) -> DownloadTaskState) {
-        val current = taskStateMap.value[taskId] ?: return
-        updateTask(taskId, updater(current))
+        taskStateMap.update { currentMap ->
+            val current = currentMap[taskId] ?: return@update currentMap
+            currentMap.toMutableMap().apply { put(taskId, updater(current)) }
+        }
     }
 
     private data class ProgressPayload(

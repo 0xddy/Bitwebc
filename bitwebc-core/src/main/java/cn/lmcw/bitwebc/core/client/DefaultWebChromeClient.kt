@@ -1,23 +1,27 @@
 package cn.lmcw.bitwebc.core.client
 
 import android.app.AlertDialog
+import android.content.pm.ActivityInfo
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
+import android.view.WindowManager
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import android.widget.FrameLayout
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import cn.lmcw.bitwebc.core.api.IWebIndicator
+import cn.lmcw.bitwebc.core.api.IWebUIProvider
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 
 class DefaultWebChromeClient(
     private val activity: ComponentActivity,
     private val indicator: IWebIndicator,
-    private val dialogFactory: ((WebView) -> AlertDialog.Builder)? = null,
+    private val uiProvider: IWebUIProvider? = null,
     private val eventReporter: ((BitwebcEvent) -> Unit)? = null,
     next: WebChromeClient? = null
 ) : MiddlewareWebChromeBase(next) {
@@ -26,6 +30,12 @@ class DefaultWebChromeClient(
     private var customView: View? = null
     private var customViewCallback: CustomViewCallback? = null
     private var fullScreenBackCallback: OnBackPressedCallback? = null
+    /** 进入全屏前系统栏是否可见，退出时恢复该状态避免破坏宿主沉浸式 */
+    private var systemBarsVisibleBeforeFullscreen: Boolean = true
+    /** 进入全屏前的屏幕方向，退出时恢复 */
+    private var requestedOrientationBeforeFullscreen: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    /** 本次全屏是否由我们添加了 FLAG_KEEP_SCREEN_ON，退出时仅此时才移除 */
+    private var keepScreenOnAddedByUs: Boolean = false
 
     override fun onProgressChanged(view: WebView, newProgress: Int) {
         indicator.onProgressChanged(newProgress)
@@ -38,11 +48,15 @@ class DefaultWebChromeClient(
         message: String?,
         result: android.webkit.JsResult
     ): Boolean {
-        val builder = dialogFactory?.invoke(view) ?: AlertDialog.Builder(view.context)
-        builder.setMessage(message ?: "")
-            .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
-            .setOnCancelListener { result.cancel() }
-            .show()
+        if (uiProvider != null) {
+            uiProvider.showJsAlert(view, url, message, result)
+        } else {
+            AlertDialog.Builder(view.context)
+                .setMessage(message ?: "")
+                .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
+                .setOnCancelListener { result.cancel() }
+                .show()
+        }
         return true
     }
 
@@ -52,12 +66,43 @@ class DefaultWebChromeClient(
         message: String?,
         result: android.webkit.JsResult
     ): Boolean {
-        val builder = dialogFactory?.invoke(view) ?: AlertDialog.Builder(view.context)
-        builder.setMessage(message ?: "")
-            .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
-            .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
-            .setOnCancelListener { result.cancel() }
-            .show()
+        if (uiProvider != null) {
+            uiProvider.showJsConfirm(view, url, message, result)
+        } else {
+            AlertDialog.Builder(view.context)
+                .setMessage(message ?: "")
+                .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
+                .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
+                .setOnCancelListener { result.cancel() }
+                .show()
+        }
+        return true
+    }
+
+    override fun onJsPrompt(
+        view: WebView,
+        url: String?,
+        message: String?,
+        defaultValue: String?,
+        result: android.webkit.JsPromptResult
+    ): Boolean {
+        if (uiProvider != null) {
+            uiProvider.showJsPrompt(view, url, message, defaultValue, result)
+        } else {
+            val editText = android.widget.EditText(view.context).apply {
+                setText(defaultValue ?: "")
+                setPadding(48, 32, 48, 32)
+            }
+            AlertDialog.Builder(view.context)
+                .setMessage(message ?: "")
+                .setView(editText)
+                .setPositiveButton(android.R.string.ok) { _, _ ->
+                    result.confirm(editText.text?.toString().orEmpty())
+                }
+                .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
+                .setOnCancelListener { result.cancel() }
+                .show()
+        }
         return true
     }
 
@@ -72,6 +117,12 @@ class DefaultWebChromeClient(
             return
         }
 
+        requestedOrientationBeforeFullscreen = activity.requestedOrientation
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+
+        keepScreenOnAddedByUs = true
+        activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         val decor = activity.findViewById<ViewGroup>(Window.ID_ANDROID_CONTENT)
         val container = FrameLayout(activity).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -79,6 +130,7 @@ class DefaultWebChromeClient(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(android.graphics.Color.BLACK)
+            isFocusable = true
             addView(
                 view,
                 FrameLayout.LayoutParams(
@@ -88,12 +140,14 @@ class DefaultWebChromeClient(
             )
         }
         decor.addView(container)
+        container.requestFocus()
 
         customView = view
         customViewCallback = callback
         fullScreenContainer = container
 
-        // 全屏播放时隐藏系统栏，提供沉浸式体验。
+        val insets = ViewCompat.getRootWindowInsets(decor)?.getInsets(WindowInsetsCompat.Type.systemBars())
+        systemBarsVisibleBeforeFullscreen = (insets?.top ?: 0) > 0 || (insets?.bottom ?: 0) > 0
         WindowInsetsControllerCompat(activity.window, decor).hide(WindowInsetsCompat.Type.systemBars())
         eventReporter?.invoke(BitwebcEvent.FullscreenChanged(fullscreen = true))
         registerFullScreenBackPress()
@@ -110,8 +164,19 @@ class DefaultWebChromeClient(
         customViewCallback = null
         fullScreenBackCallback?.remove()
         fullScreenBackCallback = null
-        // 退出全屏后恢复系统栏。
-        WindowInsetsControllerCompat(activity.window, decor).show(WindowInsetsCompat.Type.systemBars())
+
+        activity.requestedOrientation = requestedOrientationBeforeFullscreen
+        if (keepScreenOnAddedByUs) {
+            activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            keepScreenOnAddedByUs = false
+        }
+
+        val controller = WindowInsetsControllerCompat(activity.window, decor)
+        if (systemBarsVisibleBeforeFullscreen) {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        }
         eventReporter?.invoke(BitwebcEvent.FullscreenChanged(fullscreen = false))
         super.onHideCustomView()
     }

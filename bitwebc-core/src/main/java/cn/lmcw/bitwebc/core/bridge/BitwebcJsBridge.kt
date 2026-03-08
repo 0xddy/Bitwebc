@@ -7,7 +7,8 @@ import android.webkit.WebView
 private val BRIDGE_NAME_REGEX = Regex("^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 /**
- * JSBridge 安全注入与脚本执行扩展。
+ * JSBridge 安全注入（基于 [@JavascriptInterface]）。
+ * **与前端交互的主入口**：注入后前端直接调用 `window[bridgeName].methodName(...)`，无需 message 事件或 port，兼容现有 H5 写法。
  */
 object BitwebcJsBridge {
 

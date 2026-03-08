@@ -14,9 +14,14 @@ import cn.lmcw.bitwebc.core.api.IDownloadHandler
 import cn.lmcw.bitwebc.core.api.ILifeCycle
 import cn.lmcw.bitwebc.core.api.IWebIndicator
 import cn.lmcw.bitwebc.core.api.IWebLayout
+import cn.lmcw.bitwebc.core.api.IWebUIProvider
 import cn.lmcw.bitwebc.core.bridge.BitwebcJsBridge
+import androidx.fragment.app.FragmentActivity
+import cn.lmcw.bitwebc.core.client.AssetsRouteInterceptor
 import cn.lmcw.bitwebc.core.client.DefaultWebChromeClient
 import cn.lmcw.bitwebc.core.client.DefaultWebViewClient
+import cn.lmcw.bitwebc.core.permission.PermissionResultFragment
+import cn.lmcw.bitwebc.core.permission.PermissionWebChromeMiddleware
 import cn.lmcw.bitwebc.core.event.BitwebcEventCenter
 import cn.lmcw.bitwebc.core.event.BitwebcEventHub
 import cn.lmcw.bitwebc.core.event.BitwebcEventListener
@@ -42,6 +47,8 @@ class BitwebcBuilder internal constructor(
     private var autoDefaultFileChooser: Boolean = true
     private var autoDefaultDownload: Boolean = true
     private var reuseWebViewFromPool: Boolean = false
+    private var uiProvider: IWebUIProvider? = null
+    private var messagePortSetup: ((WebView, androidx.webkit.WebMessagePortCompat, androidx.webkit.WebMessagePortCompat) -> Unit)? = null
     private val jsBridgeList = mutableListOf<Pair<String, Any>>()
     private val eventHub: BitwebcEventHub = BitwebcEventCenter.hub(activity)
     private val settings = BitwebcSettings()
@@ -77,6 +84,10 @@ class BitwebcBuilder internal constructor(
     fun autoDownload(enable: Boolean = true) = apply { autoDefaultDownload = enable }
     /** 传入自定义下载实现；不传且 [autoDownload] 为 true 时使用模块注册的默认实现。 */
     fun downloadHandler(handler: IDownloadHandler) = apply { this.downloadHandler = handler }
+    /**
+     * 注入 JSBridge（基于 [@JavascriptInterface]）。**推荐方式**，与前端约定即可：
+     * 前端直接调用 `window[name].methodName(args)`，无需监听 message 事件或处理 port，对前端无侵入。
+     */
     fun jsBridge(name: String, bridge: Any) = apply { jsBridgeList += name to bridge }
     fun eventListener(listener: BitwebcEventListener) = apply { eventHub.addListener(listener) }
     fun reuseWebViewFromPool(enable: Boolean = true) = apply { reuseWebViewFromPool = enable }
@@ -84,6 +95,17 @@ class BitwebcBuilder internal constructor(
     fun settings(block: BitwebcSettings.() -> Unit) = apply {
         settings.block()
     }
+
+    /** 传入自定义 Web UI 提供方（JS 弹窗、错误重试等）；不传则使用默认 AlertDialog 行为。 */
+    fun uiProvider(provider: IWebUIProvider) = apply { uiProvider = provider }
+
+    /**
+     * **可选**：配置 WebMessagePort 双向通信（需前端配合监听 message 事件、处理 port，对前端改动较大）。
+     * 常规场景请使用 [jsBridge] + `window[name].method()`，与 [@JavascriptInterface] 兼容，前端写法简单。
+     * 仅在需要大 payload、复杂异步双向通道时再选用本 API。不调用则不会创建 channel，对前端零影响。
+     */
+    fun messagePorts(block: (android.webkit.WebView, androidx.webkit.WebMessagePortCompat, androidx.webkit.WebMessagePortCompat) -> Unit) =
+        apply { messagePortSetup = block }
 
     fun launch(): BitwebcSession {
         val hostContainer = container ?: activity.findViewById(android.R.id.content)
@@ -105,11 +127,18 @@ class BitwebcBuilder internal constructor(
             )
         )
 
+        val effectiveNextWebClient = if (settings.assetRoutes.isEmpty()) {
+            nextWebViewClient
+        } else {
+            AssetsRouteInterceptor(activity, settings.assetRoutes.toList(), nextWebViewClient)
+        }
         val defaultWebClient = DefaultWebViewClient(
             webLayout = layout,
             indicator = indicator,
+            uiProvider = uiProvider,
+            messagePortSetup = messagePortSetup,
             eventReporter = eventHub::emit,
-            next = nextWebViewClient
+            next = effectiveNextWebClient
         )
         val fileChooser: IFileChooserHandler? = fileChooserHandler ?: if (autoDefaultFileChooser) {
             BitwebcPlugins.defaultFileChooserFactory?.invoke(activity, eventHub::emit)
@@ -117,11 +146,18 @@ class BitwebcBuilder internal constructor(
             null
         }
         val resolvedNextChromeClient = fileChooser?.createWebChromeClient(nextWebChromeClient) ?: nextWebChromeClient
+        val permissionFragment = (activity as? FragmentActivity)?.let { PermissionResultFragment.ensureAdded(it) }
+        val chromeBeforeDefault = if (permissionFragment != null && activity is FragmentActivity) {
+            PermissionWebChromeMiddleware(activity, permissionFragment, resolvedNextChromeClient)
+        } else {
+            resolvedNextChromeClient
+        }
         val defaultChromeClient = DefaultWebChromeClient(
             activity = activity,
             indicator = indicator,
+            uiProvider = uiProvider,
             eventReporter = eventHub::emit,
-            next = resolvedNextChromeClient
+            next = chromeBeforeDefault
         )
 
         webView.webViewClient = defaultWebClient
@@ -161,7 +197,7 @@ class BitwebcBuilder internal constructor(
         lifeCycle.onAttach(activity, webView)
 
         initialUrl?.let { webView.loadUrl(it) }
-        return BitwebcSession(webView, root, lifecycleObserver, backPressedCallback, eventHub)
+        return BitwebcSession(webView, lifecycleObserver, backPressedCallback, eventHub)
     }
 
 }

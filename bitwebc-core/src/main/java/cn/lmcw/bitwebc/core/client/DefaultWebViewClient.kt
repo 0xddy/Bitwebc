@@ -12,6 +12,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import cn.lmcw.bitwebc.core.api.IWebIndicator
 import cn.lmcw.bitwebc.core.api.IWebLayout
+import cn.lmcw.bitwebc.core.api.IWebUIProvider
+import androidx.webkit.WebMessagePortCompat
+import cn.lmcw.bitwebc.core.bridge.BitwebcWebMessagePort
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 import cn.lmcw.bitwebc.core.route.BitwebcSchemeRouter
 
@@ -19,6 +22,8 @@ class DefaultWebViewClient(
     private val webLayout: IWebLayout,
     private val indicator: IWebIndicator,
     private val schemeRouter: BitwebcSchemeRouter = BitwebcSchemeRouter(),
+    private val uiProvider: IWebUIProvider? = null,
+    private val messagePortSetup: ((WebView, WebMessagePortCompat, WebMessagePortCompat) -> Unit)? = null,
     private val eventReporter: ((BitwebcEvent) -> Unit)? = null,
     next: WebViewClient? = null
 ) : MiddlewareWebClientBase(next) {
@@ -64,6 +69,11 @@ class DefaultWebViewClient(
         indicator.onPageFinished()
         CookieManager.getInstance().flush()
         eventReporter?.invoke(BitwebcEvent.PageFinished(url))
+        messagePortSetup?.let { setup ->
+            BitwebcWebMessagePort.setupOnPageFinished(view, url) { receivePort, sendToJsPort ->
+                setup(view, receivePort, sendToJsPort)
+            }
+        }
         super.onPageFinished(view, url)
     }
 
@@ -73,7 +83,7 @@ class DefaultWebViewClient(
         error: WebResourceError
     ) {
         if (request.isForMainFrame) {
-            webLayout.showError(error.description?.toString()) {
+            showErrorAndRetry(view, error.description?.toString()) {
                 webLayout.showWebContent()
                 view.reload()
             }
@@ -89,7 +99,7 @@ class DefaultWebViewClient(
     }
 
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-        webLayout.showError("SSL 证书异常，已阻止继续加载") {
+        showErrorAndRetry(view, "SSL 证书异常，已阻止继续加载") {
             webLayout.showWebContent()
             view.reload()
         }
@@ -105,8 +115,7 @@ class DefaultWebViewClient(
     }
 
     override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-        // 统一渲染进程退出兜底：给出错误页并允许宿主重试加载。
-        webLayout.showError("渲染进程异常退出，点击重试恢复页面") {
+        showErrorAndRetry(view, "渲染进程异常退出，点击重试恢复页面") {
             webLayout.showWebContent()
             view.reload()
         }
@@ -118,5 +127,13 @@ class DefaultWebViewClient(
             )
         )
         return true
+    }
+
+    private fun showErrorAndRetry(view: WebView, message: String?, onRetry: () -> Unit) {
+        if (uiProvider != null) {
+            uiProvider.showErrorRetry(view.context, message, onRetry)
+        } else {
+            webLayout.showError(message, onRetry)
+        }
     }
 }

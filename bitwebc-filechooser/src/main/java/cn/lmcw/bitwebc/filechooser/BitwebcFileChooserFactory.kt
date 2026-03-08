@@ -8,6 +8,7 @@ import kotlin.jvm.JvmStatic
 
 /**
  * 默认文件选择实现工厂；创建 [IFileChooserHandler] 供处理 input type="file"。
+ * 若在 Activity 已 STARTED 之后才创建 WebView，请在 Activity.onCreate 中先调用 [BitwebcFileChooser.install]。
  */
 object BitwebcFileChooserFactory {
 

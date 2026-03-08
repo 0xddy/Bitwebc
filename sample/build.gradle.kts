@@ -37,6 +37,7 @@ dependencies {
     implementation(project(":bitwebc-core"))
     implementation(project(":bitwebc-filechooser"))
     implementation(project(":bitwebc-download"))
+    implementation(libs.androidx.webkit)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
