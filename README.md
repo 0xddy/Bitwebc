@@ -1,6 +1,30 @@
 # Bitwebc
 
+[![](https://jitpack.io/v/0xddy/Bitwebc.svg)](https://jitpack.io/#0xddy/Bitwebc)
+
 Bitwebc 是一个基于 Android WebView 的增强库，使用 Kotlin DSL 进行配置。它提供统一的加载进度、错误页、生命周期与事件流，并支持可选的文件选择与下载能力，便于在 App 内快速集成 H5 页面。
+
+**Gradle 引入（JitPack）**
+
+在 `settings.gradle.kts` 中：
+
+```kotlin
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
+}
+```
+
+在模块的 `build.gradle.kts` 中（将 `Tag` 替换为上方徽章显示的最新版本号，如 `v0.1.0` 或 `0.1.0`）：
+
+```kotlin
+dependencies {
+    implementation("com.github.0xddy:Bitwebc:Tag")
+}
+```
 
 **环境要求**
 
@@ -398,7 +422,12 @@ bitwebcView.setup(fragment) {
 **2. 推送代码并打 Release**
 
 - 将上述修改与当前代码推送到 GitHub。
-- 在 GitHub 仓库页面创建 Release，标签与 `VERSION_NAME` 一致（如 `v1.0.0` 或 `1.0.0`，以你在 JitPack 使用的为准）。
+- 创建并推送版本标签（如 `v0.1.0`），与 `VERSION_NAME` 对应：
+  ```bash
+  git tag v0.1.0
+  git push origin v0.1.0
+  ```
+- 仓库已配置 **GitHub Actions**（`.github/workflows/release.yml`）：推送 `v*` 标签后会自动构建三个库模块的 release AAR，并创建 GitHub Release，将 AAR 作为附件上传。无需在网页上手动创建 Release。
 
 **3. 触发 JitPack 构建**
 
@@ -419,3 +448,5 @@ bitwebcView.setup(fragment) {
 ```
 
 成功后在本地 Maven 仓库（如 `~/.m2/repository`）中可看到对应 groupId/artifactId/version 的 AAR 与 POM，与 JitPack 拉取到的结构一致。
+
+**自动 Release 流程小结**：推送 `v*` 标签后，GitHub Actions 会构建三个 AAR、创建同名 Release 并上传 AAR 附件；之后在 JitPack 上对该标签执行 Get it 即可供他人通过 JitPack 依赖。
