@@ -15,13 +15,13 @@ import cn.lmcw.bitwebc.core.client.MiddlewareWebChromeBase
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 import cn.lmcw.bitwebc.filechooser.accept.FileChooserAcceptResolver
 import cn.lmcw.bitwebc.filechooser.accept.FileChooserAcceptResolver.MediaType
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.launch
-import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.coroutines.resume
 
 /* *
  * 默认文件选择实现：相册、相机、录像、录音、文档。

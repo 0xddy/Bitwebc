@@ -9,8 +9,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import cn.lmcw.bitwebc.core.bridge.BitwebcJsBridge
 import cn.lmcw.bitwebc.core.extensions.createPooledWebView
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicInteger
 
 object BitwebcWebViewPool {
     data class RecyclePolicy(

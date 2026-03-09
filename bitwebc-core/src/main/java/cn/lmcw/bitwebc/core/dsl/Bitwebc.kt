@@ -1,6 +1,5 @@
 package cn.lmcw.bitwebc.core.dsl
 
-import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.fragment.app.Fragment
 import cn.lmcw.bitwebc.core.pool.BitwebcWebViewPool

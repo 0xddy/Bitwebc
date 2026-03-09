@@ -1,9 +1,9 @@
 package cn.lmcw.bitwebc.download.config
 
-import okhttp3.OkHttpClient
 import cn.lmcw.bitwebc.download.storage.DefaultDownloadStorage
 import cn.lmcw.bitwebc.download.storage.DownloadStorage
 import cn.lmcw.bitwebc.download.ui.DownloadConfirmUi
+import okhttp3.OkHttpClient
 
 /** 下载模块配置 */
 data class DownloadConfig(

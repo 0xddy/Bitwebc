@@ -12,27 +12,27 @@ import androidx.annotation.ColorInt
 import androidx.core.graphics.toColorInt
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.LifecycleOwner
-import cn.lmcw.bitwebc.core.api.FileChooserHandler
 import cn.lmcw.bitwebc.core.api.DownloadHandler
-import cn.lmcw.bitwebc.core.api.WebLifecycle
+import cn.lmcw.bitwebc.core.api.FileChooserHandler
 import cn.lmcw.bitwebc.core.api.WebLayout
-import cn.lmcw.bitwebc.core.api.WebUIProvider
+import cn.lmcw.bitwebc.core.api.WebLifecycle
 import cn.lmcw.bitwebc.core.api.WebResourceInterceptor
+import cn.lmcw.bitwebc.core.api.WebUIProvider
 import cn.lmcw.bitwebc.core.bridge.BitwebcJsBridge
 import cn.lmcw.bitwebc.core.client.AssetsRouteInterceptor
 import cn.lmcw.bitwebc.core.client.DefaultWebChromeClient
 import cn.lmcw.bitwebc.core.client.DefaultWebViewClient
-import cn.lmcw.bitwebc.core.permission.PermissionResultFragment
-import cn.lmcw.bitwebc.core.permission.PermissionWebChromeMiddleware
 import cn.lmcw.bitwebc.core.event.BitwebcEventHub
 import cn.lmcw.bitwebc.core.event.BitwebcEventListener
 import cn.lmcw.bitwebc.core.lifecycle.BitwebcLifecycleObserver
+import cn.lmcw.bitwebc.core.permission.PermissionResultFragment
+import cn.lmcw.bitwebc.core.permission.PermissionWebChromeMiddleware
 import cn.lmcw.bitwebc.core.pool.BitwebcWebViewPool
 import cn.lmcw.bitwebc.core.pool.BitwebcWebViewPoolRecycler
 import cn.lmcw.bitwebc.core.settings.BitwebcSettings
 import cn.lmcw.bitwebc.core.ui.CustomErrorWebLayout
-import cn.lmcw.bitwebc.core.ui.DefaultWebLayout
 import cn.lmcw.bitwebc.core.ui.DefaultWebIndicator
+import cn.lmcw.bitwebc.core.ui.DefaultWebLayout
 
 class BitwebcBuilder internal constructor(
     private val activity: ComponentActivity,

@@ -2,8 +2,8 @@ package cn.lmcw.bitwebc.download.ui
 
 import android.app.AlertDialog
 import androidx.activity.ComponentActivity
-import cn.lmcw.bitwebc.download.model.DownloadRequest
 import cn.lmcw.bitwebc.download.ext.guessFileName
+import cn.lmcw.bitwebc.download.model.DownloadRequest
 
 /** 下载前确认 UI */
 fun interface DownloadConfirmUi {

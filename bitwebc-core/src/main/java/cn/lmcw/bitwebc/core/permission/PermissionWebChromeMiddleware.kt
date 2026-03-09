@@ -4,7 +4,6 @@ import android.Manifest
 import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
-import android.webkit.WebView
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import cn.lmcw.bitwebc.core.client.MiddlewareWebChromeBase

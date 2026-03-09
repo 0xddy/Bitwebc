@@ -12,6 +12,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.net.toUri
 import androidx.webkit.WebMessagePortCompat
 import cn.lmcw.bitwebc.core.api.WebIndicator
 import cn.lmcw.bitwebc.core.api.WebLayout
@@ -20,7 +21,6 @@ import cn.lmcw.bitwebc.core.api.WebUIProvider
 import cn.lmcw.bitwebc.core.bridge.BitwebcWebMessagePort
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 import cn.lmcw.bitwebc.core.route.BitwebcSchemeRouter
-import androidx.core.net.toUri
 
 class DefaultWebViewClient(
     private val webLayout: WebLayout,

@@ -3,10 +3,10 @@ package cn.lmcw.bitwebc.filechooser
 import android.content.Intent
 import android.net.Uri
 import android.provider.MediaStore
+import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.ComponentActivity
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 

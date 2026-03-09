@@ -5,7 +5,6 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.LifecycleOwner
 import cn.lmcw.bitwebc.core.api.FileChooserHandler
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
-import kotlin.jvm.JvmStatic
 
 /** ????????????? [FileChooserHandler] ??? input type="file"? */
 object BitwebcFileChooserFactory {
