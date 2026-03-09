@@ -3,9 +3,7 @@ package cn.lmcw.bitwebc.download.storage
 import android.net.Uri
 import java.io.OutputStream
 
-/**
- * 下载目标：写入完成后调用 [onFinish]（如 MediaStore IS_PENDING 置 0）。
- */
+/** 下载目标，写入完成后调用 onFinish */
 data class FileSink(
     val uri: Uri,
     val outputStream: OutputStream,

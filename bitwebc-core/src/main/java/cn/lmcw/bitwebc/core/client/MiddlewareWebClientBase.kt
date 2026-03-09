@@ -55,21 +55,8 @@ open class MiddlewareWebClientBase(
         return next?.shouldOverrideKeyEvent(view, event) ?: false
     }
 
-    override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
-        return next?.shouldOverrideUrlLoading(view, url) ?: false
-    }
-
     override fun onPageCommitVisible(view: WebView, url: String?) {
         next?.onPageCommitVisible(view, url)
-    }
-
-    override fun onReceivedError(
-        view: WebView,
-        errorCode: Int,
-        description: String?,
-        failingUrl: String?
-    ) {
-        next?.onReceivedError(view, errorCode, description, failingUrl)
     }
 
     override fun onReceivedHttpAuthRequest(
@@ -78,23 +65,11 @@ open class MiddlewareWebClientBase(
         host: String?,
         realm: String?
     ) {
-        next?.onReceivedHttpAuthRequest(view, handler, host, realm)
-    }
-
-    override fun onTooManyRedirects(
-        view: WebView,
-        cancelMsg: android.os.Message,
-        continueMsg: android.os.Message
-    ) {
-        next?.onTooManyRedirects(view, cancelMsg, continueMsg)
+        handler.cancel()
     }
 
     override fun onFormResubmission(view: WebView, dontResend: android.os.Message, resend: android.os.Message) {
-        next?.onFormResubmission(view, dontResend, resend)
-    }
-
-    override fun shouldInterceptRequest(view: WebView, url: String): WebResourceResponse? {
-        return next?.shouldInterceptRequest(view, url)
+        dontResend.sendToTarget()
     }
 
     override fun onReceivedSslError(
@@ -102,7 +77,7 @@ open class MiddlewareWebClientBase(
         handler: android.webkit.SslErrorHandler,
         error: android.net.http.SslError
     ) {
-        next?.onReceivedSslError(view, handler, error)
+        handler.cancel()
     }
 
     override fun onScaleChanged(view: WebView, oldScale: Float, newScale: Float) {
@@ -117,7 +92,7 @@ open class MiddlewareWebClientBase(
         view: WebView,
         detail: android.webkit.RenderProcessGoneDetail
     ): Boolean {
-        return next?.onRenderProcessGone(view, detail) ?: false
+        return false
     }
 
     open fun nextClient(): WebViewClient? = next

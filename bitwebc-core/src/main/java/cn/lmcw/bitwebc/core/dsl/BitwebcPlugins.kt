@@ -1,33 +1,26 @@
 package cn.lmcw.bitwebc.core.dsl
 
-import android.webkit.WebChromeClient
 import androidx.activity.ComponentActivity
-import cn.lmcw.bitwebc.core.api.IFileChooserHandler
-import cn.lmcw.bitwebc.core.api.IDownloadHandler
+import androidx.lifecycle.LifecycleOwner
+import cn.lmcw.bitwebc.core.api.FileChooserHandler
+import cn.lmcw.bitwebc.core.api.DownloadHandler
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 
-/**
- * 可选模块（如 bitwebc-filechooser、bitwebc-download）在此注册默认实现。
- * 调用方只需 [BitwebcBuilder.autoFileChooserHandler]/[BitwebcBuilder.autoDownload]，无需关心 reporter。
- */
+/** ? bitwebc-filechooser?bitwebc-download ?????????? */
 object BitwebcPlugins {
 
-    internal var defaultFileChooserFactory: ((ComponentActivity, (BitwebcEvent) -> Unit) -> IFileChooserHandler)? = null
+    internal var defaultFileChooserFactory: ((ComponentActivity, LifecycleOwner, String, (BitwebcEvent) -> Unit) -> FileChooserHandler)? = null
         private set
-    internal var defaultDownloadFactory: ((ComponentActivity, (BitwebcEvent) -> Unit) -> IDownloadHandler)? = null
+    internal var defaultDownloadFactory: ((ComponentActivity, (BitwebcEvent) -> Unit) -> DownloadHandler)? = null
         private set
 
-    /**
-     * 由 bitwebc-filechooser 等模块在初始化时调用；reporter 由 Core 注入。
-     */
-    fun registerDefaultFileChooser(factory: (ComponentActivity, (BitwebcEvent) -> Unit) -> IFileChooserHandler) {
+    /** ? bitwebc-filechooser ???????????reporter ? Core ??? */
+    fun registerDefaultFileChooser(factory: (ComponentActivity, LifecycleOwner, String, (BitwebcEvent) -> Unit) -> FileChooserHandler) {
         defaultFileChooserFactory = factory
     }
 
-    /**
-     * 由 bitwebc-download 等模块在初始化时调用；reporter 由 Core 在创建时注入。
-     */
-    fun registerDefaultDownload(factory: (ComponentActivity, (BitwebcEvent) -> Unit) -> IDownloadHandler) {
+    /** ? bitwebc-download ???????????reporter ? Core ??????? */
+    fun registerDefaultDownload(factory: (ComponentActivity, (BitwebcEvent) -> Unit) -> DownloadHandler) {
         defaultDownloadFactory = factory
     }
 }

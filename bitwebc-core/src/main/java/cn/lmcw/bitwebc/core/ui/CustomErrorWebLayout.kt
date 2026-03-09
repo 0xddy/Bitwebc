@@ -8,19 +8,16 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.TextView
-import cn.lmcw.bitwebc.core.api.IWebLayout
+import cn.lmcw.bitwebc.core.api.WebLayout
+import cn.lmcw.bitwebc.core.extensions.detachFromParent
+import cn.lmcw.bitwebc.core.extensions.resolveIndicatorHeightPx
 
-/**
- * 宿主自定义错误页布局：
- * - errorView: 你的错误页面根布局
- * - retryViewId: 点击重试的控件 id（不传则点击整个错误页重试）
- * - errorMessageViewId: 错误文案控件 id（可选，若是 TextView 会自动写入错误信息）
- */
+/** ?????????errorView ????retryViewId ???? id?errorMessageViewId ???? TextView id */
 class CustomErrorWebLayout(
     private val errorView: View,
     private val retryViewId: Int = View.NO_ID,
     private val errorMessageViewId: Int = View.NO_ID
-) : IWebLayout {
+) : WebLayout {
     private lateinit var rootView: FrameLayout
     private lateinit var webView: WebView
 
@@ -31,13 +28,13 @@ class CustomErrorWebLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
-        detachIfAttached(errorView)
+        errorView.detachFromParent()
         errorView.visibility = View.GONE
         rootView.addView(
             errorView,
             FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER
             )
         )
@@ -57,7 +54,7 @@ class CustomErrorWebLayout(
             indicatorView,
             FrameLayout.LayoutParams(
                 0,
-                resolveIndicatorHeightPx(indicatorView, activity),
+                indicatorView.resolveIndicatorHeightPx(activity),
                 Gravity.TOP
             )
         )
@@ -84,14 +81,4 @@ class CustomErrorWebLayout(
     }
 
     override fun root(): ViewGroup = rootView
-
-    private fun detachIfAttached(view: View) {
-        (view.parent as? ViewGroup)?.removeView(view)
-    }
-
-    private fun resolveIndicatorHeightPx(indicatorView: View, context: Context): Int {
-        val fromView = indicatorView.layoutParams?.height ?: 0
-        if (fromView > 0) return fromView
-        return (context.resources.displayMetrics.density * 2f).toInt().coerceAtLeast(1)
-    }
 }

@@ -6,9 +6,7 @@ import android.database.Cursor
 import android.net.Uri
 import cn.lmcw.bitwebc.core.dsl.BitwebcPlugins
 
-/**
- * 由系统自动加载，向 Core 注册默认下载实现；调用方无需关心 reporter。
- */
+/** ContentProvider 入口，向 Core 注册默认下载实现 */
 class BitwebcDownloadInit : ContentProvider() {
     override fun onCreate(): Boolean {
         BitwebcPlugins.registerDefaultDownload { activity, reporter ->

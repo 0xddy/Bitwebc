@@ -1,29 +1,36 @@
 package cn.lmcw.bitwebc.download.ext
 
+import android.net.Uri
 import android.webkit.URLUtil
-import java.util.regex.Pattern
 
 private const val FALLBACK_NAME = "download"
-private val FILENAME_STAR = Pattern.compile("filename\\*?=(?:UTF-8''|\\\")?([^;\\\"]+)")
 
-/**
- * 以当前 URL 为基准，结合 Content-Disposition 与 MIME 解析出安全可用的文件名。
- * 优先从 Content-Disposition 解析 filename/filename*，否则使用系统 [URLUtil.guessFileName]。
- */
 fun String.guessFileName(contentDisposition: String?, mimeType: String?): String {
-    val fromCd = contentDisposition.parseFilenameFromContentDisposition()
-    if (!fromCd.isNullOrBlank()) return fromCd.sanitizeFileName()
-    val guessed = URLUtil.guessFileName(this, contentDisposition, mimeType ?: "application/octet-stream")
+    return resolveDownloadFileName(this, this, contentDisposition, mimeType)
+}
+
+fun resolveDownloadFileName(
+    originalUrl: String,
+    finalUrl: String?,
+    contentDisposition: String?,
+    mimeType: String?
+): String {
+    val fromFinalUrl = finalUrl?.parseFileNameFromUrl()?.sanitizeFileName()
+    val fromOriginalUrl = originalUrl.parseFileNameFromUrl()?.sanitizeFileName()
+
+    if (!fromFinalUrl.isNullOrBlank()) return fromFinalUrl
+    if (!fromOriginalUrl.isNullOrBlank()) return fromOriginalUrl
+
+    val guessed = URLUtil.guessFileName(finalUrl ?: originalUrl, contentDisposition, mimeType ?: "application/octet-stream")
     return guessed.sanitizeFileName().ifBlank { FALLBACK_NAME }
 }
 
-/**
- * 从 Content-Disposition 头中解析 filename 或 filename* (RFC 5987)。
- */
-fun String?.parseFilenameFromContentDisposition(): String? {
-    if (this.isNullOrBlank()) return null
-    val matcher = FILENAME_STAR.matcher(this)
-    return if (matcher.find()) matcher.group(1)?.trim() else null
+private fun String.parseFileNameFromUrl(): String? {
+    val segment = runCatching { Uri.parse(this).lastPathSegment }.getOrNull()
+    val fileName = segment?.substringAfterLast('/')?.trim().orEmpty()
+    if (fileName.isBlank()) return null
+    if (!fileName.contains('.') || fileName.endsWith('.')) return null
+    return fileName
 }
 
 /**

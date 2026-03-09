@@ -6,7 +6,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 
-interface IWebLayout {
+interface WebLayout {
     fun createRoot(context: Context): ViewGroup
     fun attach(activity: Activity, webView: WebView, indicatorView: View)
     fun showWebContent()

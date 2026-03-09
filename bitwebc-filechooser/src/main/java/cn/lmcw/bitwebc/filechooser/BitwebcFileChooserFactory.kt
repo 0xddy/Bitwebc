@@ -2,27 +2,24 @@ package cn.lmcw.bitwebc.filechooser
 
 import android.webkit.WebChromeClient
 import androidx.activity.ComponentActivity
-import cn.lmcw.bitwebc.core.api.IFileChooserHandler
+import androidx.lifecycle.LifecycleOwner
+import cn.lmcw.bitwebc.core.api.FileChooserHandler
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 import kotlin.jvm.JvmStatic
 
-/**
- * 默认文件选择实现工厂；创建 [IFileChooserHandler] 供处理 input type="file"。
- * 若在 Activity 已 STARTED 之后才创建 WebView，请在 Activity.onCreate 中先调用 [BitwebcFileChooser.install]。
- */
+/** ????????????? [FileChooserHandler] ??? input type="file"? */
 object BitwebcFileChooserFactory {
 
-    /**
-     * 使用默认行为创建文件选择处理器（Core 插件或直接调用）。
-     */
     @JvmStatic
     fun createDefault(
         activity: ComponentActivity,
+        lifecycleOwner: LifecycleOwner = activity,
+        tag: String = "default",
         eventReporter: ((BitwebcEvent) -> Unit)? = null
-    ): IFileChooserHandler {
-        return object : IFileChooserHandler {
+    ): FileChooserHandler {
+        return object : FileChooserHandler {
             override fun createWebChromeClient(next: WebChromeClient?): WebChromeClient {
-                return DefaultFileChooserHandler(activity, eventReporter, next)
+                return DefaultFileChooserHandler(activity, lifecycleOwner, tag, eventReporter, next)
             }
         }
     }

@@ -3,6 +3,7 @@
 .gradle
 /build
 **/build/
+/sample/release/
 /captures
 .externalNativeBuild
 .cxx

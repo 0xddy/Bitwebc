@@ -6,13 +6,11 @@ import android.database.Cursor
 import android.net.Uri
 import cn.lmcw.bitwebc.core.dsl.BitwebcPlugins
 
-/**
- * 由系统自动加载，向 Core 注册默认文件选择实现；调用方无需关心 reporter。
- */
+/** ContentProvider 入口，向 Core 注册默认文件选择实现 */
 class BitwebcFileChooserInit : ContentProvider() {
     override fun onCreate(): Boolean {
-        BitwebcPlugins.registerDefaultFileChooser { activity, reporter ->
-            BitwebcFileChooserFactory.createDefault(activity, reporter)
+        BitwebcPlugins.registerDefaultFileChooser { activity, lifecycleOwner, tag, reporter ->
+            BitwebcFileChooserFactory.createDefault(activity, lifecycleOwner, tag, reporter)
         }
         return true
     }

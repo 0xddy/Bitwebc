@@ -3,12 +3,13 @@ package cn.lmcw.bitwebc.core.lifecycle
 import android.webkit.WebView
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
-import cn.lmcw.bitwebc.core.api.ILifeCycle
+import cn.lmcw.bitwebc.core.api.WebLifecycle
+import cn.lmcw.bitwebc.core.api.WebViewRecycler
 
 class BitwebcLifecycleObserver(
     private val webView: WebView,
-    private val lifeCycle: ILifeCycle,
-    private val recycleToPool: Boolean = false,
+    private val lifeCycle: WebLifecycle,
+    private val recycler: WebViewRecycler? = null,
     private val onDestroyed: (() -> Unit)? = null
 ) : DefaultLifecycleObserver {
 
@@ -48,8 +49,8 @@ class BitwebcLifecycleObserver(
         }
         lifeCycle.onDestroy(webView)
         onDestroyed?.invoke()
-        if (recycleToPool) {
-            cn.lmcw.bitwebc.core.pool.BitwebcWebViewPool.recycle(webView)
+        if (recycler != null) {
+            recycler.recycle(webView)
         } else {
             webView.destroySafelyWithAboutBlank()
         }

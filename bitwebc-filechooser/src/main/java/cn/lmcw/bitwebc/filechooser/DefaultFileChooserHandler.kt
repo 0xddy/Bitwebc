@@ -10,59 +10,49 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
-import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import cn.lmcw.bitwebc.core.client.MiddlewareWebChromeBase
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 import cn.lmcw.bitwebc.filechooser.accept.FileChooserAcceptResolver
 import cn.lmcw.bitwebc.filechooser.accept.FileChooserAcceptResolver.MediaType
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.launch
+import kotlin.coroutines.resume
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
+/* *
  * 默认文件选择实现：相册、相机、录像、录音、文档。
  *
- * 始终通过 [FileChooserResultFragment] 注册 Activity Result，避免在 Activity 已 STARTED/RESUMED
- * 后注册导致 IllegalStateException。构造时会自动 ensureAdded Fragment（仅 [FragmentActivity]）。
- * 非 FragmentActivity 的宿主不支持文件选择，会回传 null 并上报事件。
+ * 依赖 [FileChooserLauncherRegistry] 来支持文件选择。
+ * 只要宿主是 [ComponentActivity]，即可正常工作，无需强依赖 [androidx.fragment.app.FragmentActivity]。
  */
 open class DefaultFileChooserHandler(
     private val activity: ComponentActivity,
+    private val lifecycleOwner: androidx.lifecycle.LifecycleOwner = activity,
+    private val tag: String = "default",
     private val eventReporter: ((BitwebcEvent) -> Unit)? = null,
     next: WebChromeClient? = null
 ) : MiddlewareWebChromeBase(next) {
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
 
-    /** 仅 FragmentActivity 时有值；构造时自动 ensureAdded，保证 Launcher 在 Fragment 上安全注册。 */
-    private val resultFragment: FileChooserResultFragment? =
-        (activity as? FragmentActivity)?.let { fa ->
-            FileChooserResultFragment.ensureAdded(fa)
-        }
+    private val registry by lazy { FileChooserLauncherRegistry(activity, lifecycleOwner, tag) }
 
     override fun onShowFileChooser(
         webView: WebView,
         filePathCallback: ValueCallback<Array<Uri>>,
         fileChooserParams: FileChooserParams
     ): Boolean {
-        this.filePathCallback?.onReceiveValue(null)
-        this.filePathCallback = null
-        eventReporter?.invoke(BitwebcEvent.FileChooserCancelled("旧回调被新请求覆盖，已主动释放"))
+        this.filePathCallback?.let { old ->
+            old.onReceiveValue(null)
+            eventReporter?.invoke(BitwebcEvent.FileChooserCancelled("旧回调被新请求覆盖，已主动释放"))
+        }
         this.filePathCallback = filePathCallback
 
-        if (resultFragment == null) {
-            eventReporter?.invoke(
-                BitwebcEvent.FileChooserFailed("文件选择需要 FragmentActivity，当前宿主不支持")
-            )
-            dispatchResult(null)
-            return true
-        }
-
-        val fragment = resultFragment
+        val launcher = registry
         activity.lifecycleScope.launch {
             runCatching {
                 val accept = FileChooserAcceptResolver.normalizeAcceptTypes(fileChooserParams.acceptTypes)
@@ -71,18 +61,18 @@ open class DefaultFileChooserHandler(
                 val mediaType = FileChooserAcceptResolver.resolveMediaType(accept)
 
                 when {
-                    captureEnabled && mediaType == MediaType.IMAGE -> openCamera(fragment)
-                    captureEnabled && mediaType == MediaType.VIDEO -> openVideoCapture(fragment)
-                    captureEnabled && mediaType == MediaType.AUDIO -> openAudioCapture(fragment)
+                    captureEnabled && mediaType == MediaType.IMAGE -> openCamera(launcher)
+                    captureEnabled && mediaType == MediaType.VIDEO -> openVideoCapture(launcher)
+                    captureEnabled && mediaType == MediaType.AUDIO -> openAudioCapture(launcher)
                     mode == FileChooserParams.MODE_OPEN_MULTIPLE -> launchOpenDocuments(
-                        fragment,
+                        launcher,
                         if (accept.isEmpty()) arrayOf("*/*") else accept.toTypedArray()
                     )
-                    mediaType == MediaType.IMAGE -> launchPickImage(fragment)
-                    mediaType == MediaType.VIDEO -> launchPickVideo(fragment)
-                    mediaType == MediaType.AUDIO -> launchOpenDocuments(fragment, arrayOf("audio/*"))
+                    mediaType == MediaType.IMAGE -> launchPickImage(launcher)
+                    mediaType == MediaType.VIDEO -> launchPickVideo(launcher)
+                    mediaType == MediaType.AUDIO -> launchOpenDocuments(launcher, arrayOf("audio/*"))
                     else -> launchOpenDocuments(
-                        fragment,
+                        launcher,
                         if (accept.isEmpty()) arrayOf("*/*") else accept.toTypedArray()
                     )
                 }
@@ -98,8 +88,8 @@ open class DefaultFileChooserHandler(
         return true
     }
 
-    private suspend fun openCamera(fragment: FileChooserResultFragment) {
-        val granted = requestPermissionSuspend(fragment, Manifest.permission.CAMERA)
+    private suspend fun openCamera(launcher: FileChooserLauncherRegistry) {
+        val granted = requestPermissionSuspend(launcher, Manifest.permission.CAMERA)
         if (!granted) {
             eventReporter?.invoke(BitwebcEvent.FileChooserPermissionDenied("CAMERA 权限被拒绝"))
             dispatchResult(null)
@@ -113,11 +103,11 @@ open class DefaultFileChooserHandler(
             dispatchResult(null)
             return
         }
-        fragment.launchTakePicture(cameraUri) { dispatchResult(it) }
+        launcher.launchTakePicture(cameraUri) { dispatchResult(it) }
     }
 
-    private fun openVideoCapture(fragment: FileChooserResultFragment) {
-        fragment.launchCaptureVideo { uris ->
+    private fun openVideoCapture(launcher: FileChooserLauncherRegistry) {
+        launcher.launchCaptureVideo { uris ->
             if (uris == null || uris.isEmpty()) {
                 eventReporter?.invoke(BitwebcEvent.FileChooserCancelled("用户取消了视频录制"))
                 dispatchResult(null)
@@ -127,8 +117,8 @@ open class DefaultFileChooserHandler(
         }
     }
 
-    private fun openAudioCapture(fragment: FileChooserResultFragment) {
-        fragment.launchRecordAudio { uris ->
+    private fun openAudioCapture(launcher: FileChooserLauncherRegistry) {
+        launcher.launchRecordAudio { uris ->
             if (uris == null || uris.isEmpty()) {
                 eventReporter?.invoke(BitwebcEvent.FileChooserCancelled("用户取消了音频录制"))
                 dispatchResult(null)
@@ -138,18 +128,18 @@ open class DefaultFileChooserHandler(
         }
     }
 
-    private fun launchPickImage(fragment: FileChooserResultFragment) {
+    private fun launchPickImage(launcher: FileChooserLauncherRegistry) {
         val request = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-        fragment.launchPickVisualMedia(request) { dispatchResult(it) }
+        launcher.launchPickVisualMedia(request) { dispatchResult(it) }
     }
 
-    private fun launchPickVideo(fragment: FileChooserResultFragment) {
+    private fun launchPickVideo(launcher: FileChooserLauncherRegistry) {
         val request = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
-        fragment.launchPickVisualMedia(request) { dispatchResult(it) }
+        launcher.launchPickVisualMedia(request) { dispatchResult(it) }
     }
 
-    private fun launchOpenDocuments(fragment: FileChooserResultFragment, mimeTypes: Array<String>) {
-        fragment.launchOpenDocuments(mimeTypes) { uris ->
+    private fun launchOpenDocuments(launcher: FileChooserLauncherRegistry, mimeTypes: Array<String>) {
+        launcher.launchOpenDocuments(mimeTypes) { uris ->
             if (uris == null || uris.isEmpty()) {
                 eventReporter?.invoke(BitwebcEvent.FileChooserCancelled("用户取消了文件选择"))
                 dispatchResult(null)
@@ -160,12 +150,14 @@ open class DefaultFileChooserHandler(
     }
 
     private suspend fun requestPermissionSuspend(
-        fragment: FileChooserResultFragment,
+        launcher: FileChooserLauncherRegistry,
         permission: String
-    ): Boolean {
-        val deferred = CompletableDeferred<Boolean>()
-        fragment.requestPermission(permission) { deferred.complete(it) }
-        return deferred.await()
+    ): Boolean = suspendCancellableCoroutine { continuation ->
+        launcher.requestPermission(permission) { granted ->
+            if (continuation.isActive) {
+                continuation.resume(granted)
+            }
+        }
     }
 
     private fun createCameraTempFile(): File {

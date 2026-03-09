@@ -2,45 +2,29 @@ package cn.lmcw.bitwebc.filechooser
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Bundle
 import android.provider.MediaStore
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.fragment.app.Fragment
-import androidx.fragment.app.FragmentActivity
+import androidx.activity.ComponentActivity
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 
 /**
- * 无 UI 的 Headless Fragment，在 [onCreate] 中注册所有 Activity Result，
- * 避免在 Activity 已 STARTED/RESUMED 后注册导致 IllegalStateException。
- * 宿主应在 Activity.onCreate 中调用 [ensureAdded] 以确保此 Fragment 已添加。
+ * 生命周期安全的文件选择 Launcher 容器，绑定在 [ComponentActivity] 的 activityResultRegistry。
  *
- * Process Death：调起相机后若进程被杀，[onSaveInstanceState] 会保存 [pendingCameraUri]，
- * 重建后在 [onCreate] 中恢复。但 [ValueCallback] 无法序列化，重建后无法将拍照结果回传 WebView，
- * 仅做状态清理。若需最佳体验，建议避免在拍照过程中强杀进程或使用不回收的 WebView。
+ * 使用固定 key 前缀 + tag，确保 Activity 重建后 pending result 能正确恢复。
+ * 通过 [lifecycleOwner] 的 ON_DESTROY 自动反注册所有 Launcher。
  */
-class FileChooserResultFragment : Fragment() {
+class FileChooserLauncherRegistry(
+    activity: ComponentActivity,
+    lifecycleOwner: LifecycleOwner = activity,
+    tag: String = "default"
+) {
 
-    private val stateKeyPendingCameraUri = "BitwebcFileChooser.pendingCameraUri"
+    private val registry = activity.activityResultRegistry
+    private val keyPrefix = "BitwebcFileChooser_${tag}_"
 
-    companion object {
-        const val TAG = "BitwebcFileChooserResultFragment"
-
-        /**
-         * 在 Activity.onCreate 中调用，确保 Fragment 已添加，从而在 STARTED 之前完成 Launcher 注册。
-         * 若在 STARTED 之后才创建 WebView/Handler，必须先调用此方法，否则 Handler 内直接注册可能抛异常。
-         */
-        @JvmStatic
-        fun ensureAdded(activity: FragmentActivity): FileChooserResultFragment {
-            val fm = activity.supportFragmentManager
-            val existing = fm.findFragmentByTag(TAG) as? FileChooserResultFragment
-            if (existing != null) return existing
-            val fragment = FileChooserResultFragment()
-            fm.beginTransaction().add(fragment, TAG).commitNow()
-            return fragment
-        }
-    }
-
-    // 各 Launcher 回调只注册一次，通过临时 callback 转发结果
     private var pickVisualMediaCallback: ((Array<Uri>?) -> Unit)? = null
     private var openDocumentsCallback: ((Array<Uri>?) -> Unit)? = null
     private var takePictureCallback: ((Array<Uri>?) -> Unit)? = null
@@ -48,11 +32,11 @@ class FileChooserResultFragment : Fragment() {
     private var recordAudioCallback: ((Array<Uri>?) -> Unit)? = null
     private var permissionCallback: ((Boolean) -> Unit)? = null
 
-    /** 拍照时使用的 Uri；Process Death 时在 onSaveInstanceState 中保存并在 onCreate 中恢复 */
     var pendingCameraUri: Uri? = null
         private set
 
-    private val pickVisualMediaLauncher = registerForActivityResult(
+    private val pickVisualMediaLauncher: ActivityResultLauncher<PickVisualMediaRequest> = registry.register(
+        keyPrefix + "pickVisualMedia",
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         val cb = pickVisualMediaCallback
@@ -60,7 +44,8 @@ class FileChooserResultFragment : Fragment() {
         cb?.invoke(uri?.let { arrayOf(it) })
     }
 
-    private val openDocumentLauncher = registerForActivityResult(
+    private val openDocumentLauncher: ActivityResultLauncher<Array<String>> = registry.register(
+        keyPrefix + "openDocument",
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         val cb = openDocumentsCallback
@@ -68,18 +53,19 @@ class FileChooserResultFragment : Fragment() {
         if (uris.isEmpty()) cb?.invoke(null) else cb?.invoke(uris.toTypedArray())
     }
 
-    private val takePictureLauncher = registerForActivityResult(
+    private val takePictureLauncher: ActivityResultLauncher<Uri> = registry.register(
+        keyPrefix + "takePicture",
         ActivityResultContracts.TakePicture()
     ) { success ->
         val uri = pendingCameraUri
         pendingCameraUri = null
         val cb = takePictureCallback
         takePictureCallback = null
-        // Process Death 后 cb 为 null，无法回传 WebView，仅做状态清理
         cb?.invoke(if (success && uri != null) arrayOf(uri) else null)
     }
 
-    private val captureVideoLauncher = registerForActivityResult(
+    private val captureVideoLauncher: ActivityResultLauncher<Intent> = registry.register(
+        keyPrefix + "captureVideo",
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val uri = result.data?.data
@@ -88,7 +74,8 @@ class FileChooserResultFragment : Fragment() {
         cb?.invoke(uri?.let { arrayOf(it) })
     }
 
-    private val recordAudioLauncher = registerForActivityResult(
+    private val recordAudioLauncher: ActivityResultLauncher<Intent> = registry.register(
+        keyPrefix + "recordAudio",
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val uri = result.data?.data
@@ -97,7 +84,8 @@ class FileChooserResultFragment : Fragment() {
         cb?.invoke(uri?.let { arrayOf(it) })
     }
 
-    private val requestPermissionLauncher = registerForActivityResult(
+    private val requestPermissionLauncher: ActivityResultLauncher<String> = registry.register(
+        keyPrefix + "requestPermission",
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         val cb = permissionCallback
@@ -105,17 +93,22 @@ class FileChooserResultFragment : Fragment() {
         cb?.invoke(granted)
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // 恢复 Process Death 前保存的拍照 Uri（ValueCallback 无法恢复，仅做状态一致）
-        savedInstanceState?.getString(stateKeyPendingCameraUri)?.let {
-            pendingCameraUri = Uri.parse(it)
-        }
-    }
+    private val allLaunchers: List<ActivityResultLauncher<*>> = listOf(
+        pickVisualMediaLauncher,
+        openDocumentLauncher,
+        takePictureLauncher,
+        captureVideoLauncher,
+        recordAudioLauncher,
+        requestPermissionLauncher
+    )
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        pendingCameraUri?.let { outState.putString(stateKeyPendingCameraUri, it.toString()) }
+    init {
+        lifecycleOwner.lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onDestroy(owner: LifecycleOwner) {
+                allLaunchers.forEach { it.unregister() }
+                owner.lifecycle.removeObserver(this)
+            }
+        })
     }
 
     fun launchPickVisualMedia(request: PickVisualMediaRequest, onResult: (Array<Uri>?) -> Unit) {

@@ -1,44 +1,42 @@
 package cn.lmcw.bitwebc.core.permission
 
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
-import androidx.activity.result.contract.ActivityResultContracts
 
-/**
- * 无 UI 的 Headless Fragment，在 [onCreate] 前完成 Activity Result 注册，
- * 用于地理定位、WebRTC 等权限申请，避免在 Activity 已 STARTED 后注册导致异常。
- */
+/** 无 UI Fragment，用于权限申请（地理定位、WebRTC 等） */
 class PermissionResultFragment : Fragment() {
-
-    private var singlePermissionCallback: ((Boolean) -> Unit)? = null
-    private var multiplePermissionsCallback: ((Map<String, Boolean>) -> Unit)? = null
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        singlePermissionCallback?.invoke(granted)
-        singlePermissionCallback = null
+        dispatcher.onSinglePermissionResult(granted)
     }
 
     private val requestMultiplePermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        multiplePermissionsCallback?.invoke(result)
-        multiplePermissionsCallback = null
+        dispatcher.onMultiplePermissionsResult(result)
+    }
+
+    private val dispatcher: PermissionRequestDispatcher by lazy(LazyThreadSafetyMode.NONE) {
+        PermissionRequestDispatcher(
+            launchSinglePermission = { permission -> requestPermissionLauncher.launch(permission) },
+            launchMultiplePermissions = { permissions -> requestMultiplePermissionsLauncher.launch(permissions) }
+        )
     }
 
     fun requestPermission(permission: String, onResult: (Boolean) -> Unit) {
-        singlePermissionCallback = onResult
-        requestPermissionLauncher.launch(permission)
+        dispatcher.enqueueSingle(permission, onResult)
     }
 
     fun requestPermissions(permissions: Array<String>, onResult: (Map<String, Boolean>) -> Unit) {
-        if (permissions.isEmpty()) {
-            onResult(emptyMap())
-            return
-        }
-        multiplePermissionsCallback = onResult
-        requestMultiplePermissionsLauncher.launch(permissions)
+        dispatcher.enqueueMultiple(permissions, onResult)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        dispatcher.cancelAllPendingAsDenied()
     }
 
     companion object {
@@ -50,7 +48,11 @@ class PermissionResultFragment : Fragment() {
             val existing = fm.findFragmentByTag(TAG) as? PermissionResultFragment
             if (existing != null) return existing
             val fragment = PermissionResultFragment()
-            fm.beginTransaction().add(fragment, TAG).commitNow()
+            try {
+                fm.beginTransaction().add(fragment, TAG).commitNowAllowingStateLoss()
+            } catch (e: Exception) {
+                fm.beginTransaction().add(fragment, TAG).commitAllowingStateLoss()
+            }
             return fragment
         }
     }

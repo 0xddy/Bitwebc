@@ -14,14 +14,14 @@ import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.WindowInsetsControllerCompat
-import cn.lmcw.bitwebc.core.api.IWebIndicator
-import cn.lmcw.bitwebc.core.api.IWebUIProvider
+import cn.lmcw.bitwebc.core.api.WebIndicator
+import cn.lmcw.bitwebc.core.api.WebUIProvider
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 
 class DefaultWebChromeClient(
     private val activity: ComponentActivity,
-    private val indicator: IWebIndicator,
-    private val uiProvider: IWebUIProvider? = null,
+    private val indicator: WebIndicator,
+    private val nativeUiDelegate: WebUIProvider? = null,
     private val eventReporter: ((BitwebcEvent) -> Unit)? = null,
     next: WebChromeClient? = null
 ) : MiddlewareWebChromeBase(next) {
@@ -30,11 +30,11 @@ class DefaultWebChromeClient(
     private var customView: View? = null
     private var customViewCallback: CustomViewCallback? = null
     private var fullScreenBackCallback: OnBackPressedCallback? = null
-    /** 进入全屏前系统栏是否可见，退出时恢复该状态避免破坏宿主沉浸式 */
+    /** ?????????????????????????????? */
     private var systemBarsVisibleBeforeFullscreen: Boolean = true
-    /** 进入全屏前的屏幕方向，退出时恢复 */
+    /** ???????????????? */
     private var requestedOrientationBeforeFullscreen: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-    /** 本次全屏是否由我们添加了 FLAG_KEEP_SCREEN_ON，退出时仅此时才移除 */
+    /** ???????????? FLAG_KEEP_SCREEN_ON?????????? */
     private var keepScreenOnAddedByUs: Boolean = false
 
     override fun onProgressChanged(view: WebView, newProgress: Int) {
@@ -48,8 +48,8 @@ class DefaultWebChromeClient(
         message: String?,
         result: android.webkit.JsResult
     ): Boolean {
-        if (uiProvider != null) {
-            uiProvider.showJsAlert(view, url, message, result)
+        if (nativeUiDelegate != null) {
+            nativeUiDelegate.showJsAlert(view, url, message, result)
         } else {
             AlertDialog.Builder(view.context)
                 .setMessage(message ?: "")
@@ -66,8 +66,8 @@ class DefaultWebChromeClient(
         message: String?,
         result: android.webkit.JsResult
     ): Boolean {
-        if (uiProvider != null) {
-            uiProvider.showJsConfirm(view, url, message, result)
+        if (nativeUiDelegate != null) {
+            nativeUiDelegate.showJsConfirm(view, url, message, result)
         } else {
             AlertDialog.Builder(view.context)
                 .setMessage(message ?: "")
@@ -86,8 +86,8 @@ class DefaultWebChromeClient(
         defaultValue: String?,
         result: android.webkit.JsPromptResult
     ): Boolean {
-        if (uiProvider != null) {
-            uiProvider.showJsPrompt(view, url, message, defaultValue, result)
+        if (nativeUiDelegate != null) {
+            nativeUiDelegate.showJsPrompt(view, url, message, defaultValue, result)
         } else {
             val editText = android.widget.EditText(view.context).apply {
                 setText(defaultValue ?: "")
@@ -112,13 +112,12 @@ class DefaultWebChromeClient(
             return
         }
         if (customView != null) {
-            // 已在全屏状态，直接回调隐藏新请求，避免多层叠加。
-            callback.onCustomViewHidden()
+            // ?????????????????????????            callback.onCustomViewHidden()
             return
         }
 
         requestedOrientationBeforeFullscreen = activity.requestedOrientation
-        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 
         keepScreenOnAddedByUs = true
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -181,11 +180,18 @@ class DefaultWebChromeClient(
         super.onHideCustomView()
     }
 
+    fun release() {
+        if (customView != null) {
+            onHideCustomView()
+        }
+        fullScreenBackCallback?.remove()
+        fullScreenBackCallback = null
+    }
+
     private fun registerFullScreenBackPress() {
         fullScreenBackCallback?.remove()
         fullScreenBackCallback = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                // 全屏状态下优先消费返回键用于退出视频全屏。
                 onHideCustomView()
             }
         }

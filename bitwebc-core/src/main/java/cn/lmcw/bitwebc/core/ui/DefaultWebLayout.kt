@@ -11,9 +11,10 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-import cn.lmcw.bitwebc.core.api.IWebLayout
+import cn.lmcw.bitwebc.core.api.WebLayout
+import cn.lmcw.bitwebc.core.extensions.resolveIndicatorHeightPx
 
-class DefaultWebLayout : IWebLayout {
+class DefaultWebLayout : WebLayout {
     private lateinit var rootView: FrameLayout
     private lateinit var webView: WebView
     private lateinit var errorContainer: LinearLayout
@@ -29,7 +30,11 @@ class DefaultWebLayout : IWebLayout {
             setBackgroundColor(Color.WHITE)
         }
         buildErrorView(context)
-        rootView.addView(errorContainer)
+        rootView.addView(errorContainer, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
         return rootView
     }
 
@@ -45,8 +50,8 @@ class DefaultWebLayout : IWebLayout {
         rootView.addView(
             indicatorView,
             FrameLayout.LayoutParams(
-                0,
-                resolveIndicatorHeightPx(indicatorView, activity),
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                indicatorView.resolveIndicatorHeightPx(activity),
                 Gravity.TOP
             )
         )
@@ -106,9 +111,4 @@ class DefaultWebLayout : IWebLayout {
         }
     }
 
-    private fun resolveIndicatorHeightPx(indicatorView: View, context: Context): Int {
-        val fromView = indicatorView.layoutParams?.height ?: 0
-        if (fromView > 0) return fromView
-        return (context.resources.displayMetrics.density * 2f).toInt().coerceAtLeast(1)
-    }
 }

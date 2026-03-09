@@ -1,20 +1,16 @@
 package cn.lmcw.bitwebc.core.bridge
 
 import android.annotation.SuppressLint
-import android.os.Build
 import android.webkit.WebView
+import java.util.WeakHashMap
 
 private val BRIDGE_NAME_REGEX = Regex("^[a-zA-Z_][a-zA-Z0-9_]*$")
 
-/**
- * JSBridge 安全注入（基于 [@JavascriptInterface]）。
- * **与前端交互的主入口**：注入后前端直接调用 `window[bridgeName].methodName(...)`，无需 message 事件或 port，兼容现有 H5 写法。
- */
+/** JSBridge 注入，前端通过 window[name].method() 调用 */
 object BitwebcJsBridge {
 
-    /**
-     * 仅在 API 17+ 注入，且限制 bridge 名称格式，避免非法对象名导致脚本异常。
-     */
+    private val injectedBridges = WeakHashMap<WebView, MutableSet<String>>()
+
     @SuppressLint("JavascriptInterface")
     fun injectSafely(webView: WebView, bridgeName: String, bridge: Any): Boolean {
         if (!BRIDGE_NAME_REGEX.matches(bridgeName)) return false
@@ -23,13 +19,22 @@ object BitwebcJsBridge {
         webView.removeJavascriptInterface("accessibility")
         webView.removeJavascriptInterface("accessibilityTraversal")
         webView.addJavascriptInterface(bridge, bridgeName)
+        
+        injectedBridges.getOrPut(webView) { mutableSetOf() }.add(bridgeName)
         return true
+    }
+
+    fun removeSafely(webView: WebView) {
+        val names = injectedBridges.remove(webView)
+        if (names != null) {
+            for (name in names) {
+                webView.removeJavascriptInterface(name)
+            }
+        }
     }
 }
 
-/**
- * 安全执行 JS：新系统走 evaluateJavascript，旧系统降级 loadUrl。
- */
+/** 执行 JS，旧系统降级 loadUrl */
 fun WebView.evaluateJavascriptSafe(
     script: String,
     onResult: ((String?) -> Unit)? = null

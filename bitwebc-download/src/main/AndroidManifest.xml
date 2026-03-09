@@ -6,5 +6,8 @@
             android:name=".BitwebcDownloadInit"
             android:authorities="${applicationId}.bitwebc.download.init"
             android:exported="false" />
+        <receiver
+            android:name=".notification.DownloadNotificationReceiver"
+            android:exported="false" />
     </application>
 </manifest>

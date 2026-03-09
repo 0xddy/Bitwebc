@@ -3,7 +3,7 @@ package cn.lmcw.bitwebc.core.api
 import android.content.Context
 import android.view.View
 
-interface IWebIndicator {
+interface WebIndicator {
     fun createView(context: Context): View
     fun onPageStarted()
     fun onProgressChanged(progress: Int)

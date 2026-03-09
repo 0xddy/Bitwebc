@@ -4,10 +4,10 @@ plugins {
 
 android {
     namespace = "cn.lmcw.bitwebc.core"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
-        minSdk = 21
+        minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
     }
 

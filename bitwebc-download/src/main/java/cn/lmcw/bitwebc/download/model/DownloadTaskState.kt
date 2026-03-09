@@ -1,29 +1,74 @@
 package cn.lmcw.bitwebc.download.model
 
 /**
- * 下载任务当前状态快照，用于 UI 或事件订阅。
+ * 下载任务状态：sealed 有限状态机，非法状态在编译期不可达。
  */
-data class DownloadTaskState(
-    val id: String,
-    val url: String,
-    val fileName: String? = null,
-    val status: DownloadTaskStatus = DownloadTaskStatus.QUEUED,
-    val downloadedBytes: Long = 0,
-    val totalBytes: Long = -1,
-    val error: String? = null,
-    val createdAtMillis: Long = System.currentTimeMillis()
-) {
-    /** 进度百分比 [0, 100]，未知总大小时为 -1 */
-    val progressPercent: Int
-        get() = if (totalBytes > 0) {
-            ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 100)
-        } else -1
+public sealed interface DownloadTaskState {
+    public val id: String
+    public val url: String
+    public val fileName: String?
+    public val createdAtMillis: Long
 
-    val isTerminal: Boolean
-        get() = status == DownloadTaskStatus.SUCCESS ||
-            status == DownloadTaskStatus.FAILED ||
-            status == DownloadTaskStatus.CANCELLED
+    public data class Queued(
+        override val id: String,
+        override val url: String,
+        override val fileName: String? = null,
+        override val createdAtMillis: Long = System.currentTimeMillis()
+    ) : DownloadTaskState
 
-    val isActive: Boolean
-        get() = status == DownloadTaskStatus.QUEUED || status == DownloadTaskStatus.RUNNING
+    public data class Running(
+        override val id: String,
+        override val url: String,
+        override val fileName: String,
+        public val downloadedBytes: Long,
+        public val totalBytes: Long,
+        override val createdAtMillis: Long = System.currentTimeMillis()
+    ) : DownloadTaskState {
+        public val progressPercent: Int
+            get() = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else -1
+    }
+
+    public data class Paused(
+        override val id: String,
+        override val url: String,
+        override val fileName: String? = null,
+        override val createdAtMillis: Long = System.currentTimeMillis()
+    ) : DownloadTaskState
+
+    public data class Success(
+        override val id: String,
+        override val url: String,
+        override val fileName: String,
+        public val totalBytes: Long,
+        override val createdAtMillis: Long = System.currentTimeMillis()
+    ) : DownloadTaskState
+
+    public data class Failed(
+        override val id: String,
+        override val url: String,
+        override val fileName: String?,
+        public val error: Throwable,
+        override val createdAtMillis: Long = System.currentTimeMillis()
+    ) : DownloadTaskState
+
+    public data class Cancelled(
+        override val id: String,
+        override val url: String,
+        override val fileName: String? = null,
+        override val createdAtMillis: Long = System.currentTimeMillis()
+    ) : DownloadTaskState
 }
+
+/** 是否为终态（成功/失败/取消）。 */
+public val DownloadTaskState.isTerminal: Boolean
+    get() = when (this) {
+        is DownloadTaskState.Success, is DownloadTaskState.Failed, is DownloadTaskState.Cancelled -> true
+        else -> false
+    }
+
+/** 是否处于可进行中的状态（排队中或下载中）。 */
+public val DownloadTaskState.isActive: Boolean
+    get() = when (this) {
+        is DownloadTaskState.Queued, is DownloadTaskState.Running -> true
+        else -> false
+    }

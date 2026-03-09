@@ -4,12 +4,12 @@ plugins {
 
 android {
     namespace = "cn.lmcw.bitwebc.sample"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "cn.lmcw.bitwebc.sample"
-        minSdk = 21
-        targetSdk = 34
+        minSdk = 24
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 

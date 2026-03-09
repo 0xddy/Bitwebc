@@ -40,7 +40,7 @@ open class MiddlewareWebChromeBase(
     }
 
     override fun onPermissionRequest(request: PermissionRequest) {
-        next?.onPermissionRequest(request)
+        request.deny()
     }
 
     override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {

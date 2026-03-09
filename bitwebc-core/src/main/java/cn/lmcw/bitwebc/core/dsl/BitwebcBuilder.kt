@@ -1,5 +1,6 @@
 package cn.lmcw.bitwebc.core.dsl
 
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
@@ -9,53 +10,62 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.annotation.ColorInt
 import androidx.core.graphics.toColorInt
-import cn.lmcw.bitwebc.core.api.IFileChooserHandler
-import cn.lmcw.bitwebc.core.api.IDownloadHandler
-import cn.lmcw.bitwebc.core.api.ILifeCycle
-import cn.lmcw.bitwebc.core.api.IWebIndicator
-import cn.lmcw.bitwebc.core.api.IWebLayout
-import cn.lmcw.bitwebc.core.api.IWebUIProvider
-import cn.lmcw.bitwebc.core.bridge.BitwebcJsBridge
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.LifecycleOwner
+import cn.lmcw.bitwebc.core.api.FileChooserHandler
+import cn.lmcw.bitwebc.core.api.DownloadHandler
+import cn.lmcw.bitwebc.core.api.WebLifecycle
+import cn.lmcw.bitwebc.core.api.WebLayout
+import cn.lmcw.bitwebc.core.api.WebUIProvider
+import cn.lmcw.bitwebc.core.api.WebResourceInterceptor
+import cn.lmcw.bitwebc.core.bridge.BitwebcJsBridge
 import cn.lmcw.bitwebc.core.client.AssetsRouteInterceptor
 import cn.lmcw.bitwebc.core.client.DefaultWebChromeClient
 import cn.lmcw.bitwebc.core.client.DefaultWebViewClient
 import cn.lmcw.bitwebc.core.permission.PermissionResultFragment
 import cn.lmcw.bitwebc.core.permission.PermissionWebChromeMiddleware
-import cn.lmcw.bitwebc.core.event.BitwebcEventCenter
 import cn.lmcw.bitwebc.core.event.BitwebcEventHub
 import cn.lmcw.bitwebc.core.event.BitwebcEventListener
 import cn.lmcw.bitwebc.core.lifecycle.BitwebcLifecycleObserver
 import cn.lmcw.bitwebc.core.pool.BitwebcWebViewPool
+import cn.lmcw.bitwebc.core.pool.BitwebcWebViewPoolRecycler
 import cn.lmcw.bitwebc.core.settings.BitwebcSettings
 import cn.lmcw.bitwebc.core.ui.CustomErrorWebLayout
 import cn.lmcw.bitwebc.core.ui.DefaultWebLayout
-import cn.lmcw.bitwebc.core.ui.WebIndicator
+import cn.lmcw.bitwebc.core.ui.DefaultWebIndicator
 
 class BitwebcBuilder internal constructor(
-    private val activity: ComponentActivity
+    private val activity: ComponentActivity,
+    private val lifecycleOwner: LifecycleOwner = activity
 ) {
+    companion object {
+        private const val TAG = "BitwebcBuilder"
+    }
+
     private var initialUrl: String? = null
     private var container: ViewGroup? = null
-    private var layout: IWebLayout = DefaultWebLayout()
-    private var indicator: IWebIndicator = WebIndicator()
-    private var lifeCycle: ILifeCycle = object : ILifeCycle {}
+    private var layout: WebLayout = DefaultWebLayout()
+    private var indicator: cn.lmcw.bitwebc.core.api.WebIndicator = DefaultWebIndicator()
+    private var lifeCycle: WebLifecycle = object : WebLifecycle {}
     private var nextWebViewClient: WebViewClient? = null
     private var nextWebChromeClient: WebChromeClient? = null
-    private var fileChooserHandler: IFileChooserHandler? = null
-    private var downloadHandler: IDownloadHandler? = null
-    private var autoDefaultFileChooser: Boolean = true
-    private var autoDefaultDownload: Boolean = true
+    private var customFileChooserHandler: FileChooserHandler? = null
+    private var customFileChooserFactory: ((ComponentActivity) -> FileChooserHandler)? = null
+    private var customDownloadHandler: DownloadHandler? = null
+    private var customDownloadFactory: ((ComponentActivity) -> DownloadHandler)? = null
     private var reuseWebViewFromPool: Boolean = false
-    private var uiProvider: IWebUIProvider? = null
+    private val poolRecycleOptions = PoolRecycleOptions()
+    private var nativeUiDelegate: WebUIProvider? = null
+    private var sslErrorPolicy: ((android.net.Uri, android.net.http.SslError) -> Boolean)? = null
     private var messagePortSetup: ((WebView, androidx.webkit.WebMessagePortCompat, androidx.webkit.WebMessagePortCompat) -> Unit)? = null
     private val jsBridgeList = mutableListOf<Pair<String, Any>>()
-    private val eventHub: BitwebcEventHub = BitwebcEventCenter.hub(activity)
+    private val eventListeners = mutableListOf<BitwebcEventListener>()
+    private val resourceInterceptors = mutableListOf<WebResourceInterceptor>()
     private val settings = BitwebcSettings()
 
     fun loadUrl(url: String) = apply { this.initialUrl = url }
-    fun attachTo(container: ViewGroup) = apply { this.container = container }
-    fun errorLayout(layout: IWebLayout) = apply { this.layout = layout }
+    internal fun attachTo(container: ViewGroup) = apply { this.container = container }
+    fun errorLayout(layout: WebLayout) = apply { this.layout = layout }
     fun errorPage(
         errorView: View,
         retryViewId: Int = View.NO_ID,
@@ -67,47 +77,70 @@ class BitwebcBuilder internal constructor(
             errorMessageViewId = errorMessageViewId
         )
     }
-    fun customIndicator(indicator: IWebIndicator) = apply { this.indicator = indicator }
+    fun customIndicator(indicator: cn.lmcw.bitwebc.core.api.WebIndicator) = apply { this.indicator = indicator }
     fun indicator(block: ProgressIndicatorOptions.() -> Unit) = apply {
         val options = ProgressIndicatorOptions().apply(block)
-        indicator = WebIndicator(
+        indicator = DefaultWebIndicator(
             heightDp = options.heightDp,
             color = options.color
         )
     }
-    fun lifeCycle(lifeCycle: ILifeCycle) = apply { this.lifeCycle = lifeCycle }
+    fun lifeCycle(lifeCycle: WebLifecycle) = apply { this.lifeCycle = lifeCycle }
     fun webViewInterceptor(next: WebViewClient) = apply { this.nextWebViewClient = next }
     fun webChromeInterceptor(next: WebChromeClient) = apply { this.nextWebChromeClient = next }
-    /** 传入自定义文件选择实现；不传且 [autoFileChooserHandler] 为 true 时使用模块注册的默认实现。 */
-    fun fileChooserHandler(handler: IFileChooserHandler) = apply { this.fileChooserHandler = handler }
-    fun autoFileChooserHandler(enable: Boolean = true) = apply { autoDefaultFileChooser = enable }
-    fun autoDownload(enable: Boolean = true) = apply { autoDefaultDownload = enable }
-    /** 传入自定义下载实现；不传且 [autoDownload] 为 true 时使用模块注册的默认实现。 */
-    fun downloadHandler(handler: IDownloadHandler) = apply { this.downloadHandler = handler }
-    /**
-     * 注入 JSBridge（基于 [@JavascriptInterface]）。**推荐方式**，与前端约定即可：
-     * 前端直接调用 `window[name].methodName(args)`，无需监听 message 事件或处理 port，对前端无侵入。
-     */
+    fun addResourceInterceptor(interceptor: WebResourceInterceptor) = apply { resourceInterceptors += interceptor }
+    fun registerFileChooserHandler(handler: FileChooserHandler) = apply {
+        this.customFileChooserHandler = handler
+        this.customFileChooserFactory = null
+    }
+    /** 文件选择器工厂，未注册时使用默认实现 */
+    fun registerFileChooserHandler(factory: (ComponentActivity) -> FileChooserHandler) = apply {
+        this.customFileChooserFactory = factory
+        this.customFileChooserHandler = null
+    }
+    fun registerDownloadHandler(handler: DownloadHandler) = apply {
+        this.customDownloadHandler = handler
+        this.customDownloadFactory = null
+    }
+    /** 下载处理器工厂，未注册时使用默认实现 */
+    fun registerDownloadHandler(factory: (ComponentActivity) -> DownloadHandler) = apply {
+        this.customDownloadFactory = factory
+        this.customDownloadHandler = null
+    }
+    /** 注册 JSBridge，前端通过 window[name].methodName() 调用 */
     fun jsBridge(name: String, bridge: Any) = apply { jsBridgeList += name to bridge }
-    fun eventListener(listener: BitwebcEventListener) = apply { eventHub.addListener(listener) }
+    fun eventListener(listener: BitwebcEventListener) = apply { eventListeners += listener }
     fun reuseWebViewFromPool(enable: Boolean = true) = apply { reuseWebViewFromPool = enable }
+    fun poolRecycleOptions(block: PoolRecycleOptions.() -> Unit) = apply { poolRecycleOptions.apply(block) }
 
     fun settings(block: BitwebcSettings.() -> Unit) = apply {
         settings.block()
     }
 
-    /** 传入自定义 Web UI 提供方（JS 弹窗、错误重试等）；不传则使用默认 AlertDialog 行为。 */
-    fun uiProvider(provider: IWebUIProvider) = apply { uiProvider = provider }
+    /** 自定义 Web 与 Native 交互 UI（如 JS 弹窗替代默认 AlertDialog） */
+    fun nativeUiDelegate(delegate: WebUIProvider) = apply { nativeUiDelegate = delegate }
 
     /**
-     * **可选**：配置 WebMessagePort 双向通信（需前端配合监听 message 事件、处理 port，对前端改动较大）。
-     * 常规场景请使用 [jsBridge] + `window[name].method()`，与 [@JavascriptInterface] 兼容，前端写法简单。
-     * 仅在需要大 payload、复杂异步双向通道时再选用本 API。不调用则不会创建 channel，对前端零影响。
+     * SSL 错误放行策略。返回 true 放行（proceed），返回 false 走默认拦截流程（错误页 + cancel）。
+     *
+     * 优先级高于 [nativeUiDelegate] 的 `showSslError`。
+     *
+     * ```
+     * sslErrorPolicy { url, error ->
+     *     url.host == "dev.example.com"
+     * }
+     * ```
      */
-    fun messagePorts(block: (android.webkit.WebView, androidx.webkit.WebMessagePortCompat, androidx.webkit.WebMessagePortCompat) -> Unit) =
+    fun sslErrorPolicy(policy: (url: android.net.Uri, error: android.net.http.SslError) -> Boolean) =
+        apply { sslErrorPolicy = policy }
+
+    /** 设置 WebMessagePort 回调，用于 postMessage / channel 通信 */
+    fun messagePorts(block: (WebView, androidx.webkit.WebMessagePortCompat, androidx.webkit.WebMessagePortCompat) -> Unit) =
         apply { messagePortSetup = block }
 
     fun launch(): BitwebcSession {
+        val eventHub = BitwebcEventHub()
+        eventListeners.forEach { eventHub.addListener(it) }
         val hostContainer = container ?: activity.findViewById(android.R.id.content)
         val webView = if (reuseWebViewFromPool) {
             BitwebcWebViewPool.acquire(activity)
@@ -135,19 +168,25 @@ class BitwebcBuilder internal constructor(
         val defaultWebClient = DefaultWebViewClient(
             webLayout = layout,
             indicator = indicator,
-            uiProvider = uiProvider,
+            nativeUiDelegate = nativeUiDelegate,
+            sslErrorPolicy = sslErrorPolicy,
             messagePortSetup = messagePortSetup,
             eventReporter = eventHub::emit,
+            resourceInterceptors = resourceInterceptors.toList(),
             next = effectiveNextWebClient
         )
-        val fileChooser: IFileChooserHandler? = fileChooserHandler ?: if (autoDefaultFileChooser) {
-            BitwebcPlugins.defaultFileChooserFactory?.invoke(activity, eventHub::emit)
-        } else {
-            null
+        val fileChooser: FileChooserHandler? = customFileChooserHandler
+            ?: customFileChooserFactory?.invoke(activity)
+            ?: BitwebcPlugins.defaultFileChooserFactory?.invoke(activity, lifecycleOwner, "default", eventHub::emit)
+        if (fileChooser == null) {
+            Log.w(
+                TAG,
+                "No FileChooserHandler resolved. Please register custom handler or include default filechooser module."
+            )
         }
         val resolvedNextChromeClient = fileChooser?.createWebChromeClient(nextWebChromeClient) ?: nextWebChromeClient
         val permissionFragment = (activity as? FragmentActivity)?.let { PermissionResultFragment.ensureAdded(it) }
-        val chromeBeforeDefault = if (permissionFragment != null && activity is FragmentActivity) {
+        val chromeBeforeDefault = if (permissionFragment != null) {
             PermissionWebChromeMiddleware(activity, permissionFragment, resolvedNextChromeClient)
         } else {
             resolvedNextChromeClient
@@ -155,17 +194,21 @@ class BitwebcBuilder internal constructor(
         val defaultChromeClient = DefaultWebChromeClient(
             activity = activity,
             indicator = indicator,
-            uiProvider = uiProvider,
+            nativeUiDelegate = nativeUiDelegate,
             eventReporter = eventHub::emit,
             next = chromeBeforeDefault
         )
 
         webView.webViewClient = defaultWebClient
         webView.webChromeClient = defaultChromeClient
-        val resolvedDownloadHandler: IDownloadHandler? = downloadHandler ?: if (autoDefaultDownload) {
-            BitwebcPlugins.defaultDownloadFactory?.invoke(activity, eventHub::emit)
-        } else {
-            null
+        val resolvedDownloadHandler: DownloadHandler? = customDownloadHandler
+            ?: customDownloadFactory?.invoke(activity)
+            ?: BitwebcPlugins.defaultDownloadFactory?.invoke(activity, eventHub::emit)
+        if (resolvedDownloadHandler == null) {
+            Log.w(
+                TAG,
+                "No DownloadHandler resolved. Please register custom handler or include default download module."
+            )
         }
         resolvedDownloadHandler?.let { webView.setDownloadListener(it) }
         jsBridgeList.forEach { (name, bridge) ->
@@ -188,16 +231,28 @@ class BitwebcBuilder internal constructor(
         val lifecycleObserver = BitwebcLifecycleObserver(
             webView = webView,
             lifeCycle = lifeCycle,
-            recycleToPool = reuseWebViewFromPool
+            recycler = if (reuseWebViewFromPool) BitwebcWebViewPoolRecycler(
+                BitwebcWebViewPool.RecyclePolicy(
+                    clearCacheOnRecycle = poolRecycleOptions.clearCacheOnRecycle,
+                    clearDiskCacheOnRecycle = poolRecycleOptions.clearDiskCacheOnRecycle
+                )
+            ) else null
         ) {
             backPressedCallback.remove()
             (root.parent as? ViewGroup)?.removeView(root)
         }
-        activity.lifecycle.addObserver(lifecycleObserver)
+        lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
         lifeCycle.onAttach(activity, webView)
 
         initialUrl?.let { webView.loadUrl(it) }
-        return BitwebcSession(webView, lifecycleObserver, backPressedCallback, eventHub)
+        return BitwebcSession(
+            webView = webView,
+            lifecycleOwner = lifecycleOwner,
+            lifecycleObserver = lifecycleObserver,
+            backPressedCallback = backPressedCallback,
+            eventHub = eventHub,
+            chromeClient = defaultChromeClient
+        )
     }
 
 }
@@ -219,5 +274,18 @@ class ProgressIndicatorOptions internal constructor() {
 
     fun heightDp(dp: Int) = apply {
         heightDp = dp.coerceAtLeast(1)
+    }
+}
+
+class PoolRecycleOptions internal constructor() {
+    internal var clearCacheOnRecycle: Boolean = false
+        private set
+    internal var clearDiskCacheOnRecycle: Boolean = false
+        private set
+
+    /** 回收时是否清理缓存；includeDisk 为 true 时同时清磁盘 */
+    fun clearCacheOnRecycle(enable: Boolean = true, includeDisk: Boolean = false) = apply {
+        clearCacheOnRecycle = enable
+        clearDiskCacheOnRecycle = enable && includeDisk
     }
 }

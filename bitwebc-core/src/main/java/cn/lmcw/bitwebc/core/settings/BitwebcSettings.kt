@@ -4,6 +4,7 @@ import android.content.res.Configuration
 import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 
 enum class DarkMode {
     OFF,
@@ -24,8 +25,9 @@ class BitwebcSettings {
     var userAgentSuffix: String = "Bitwebc/1.0"
     var customUserAgent: String? = null
     var darkMode: DarkMode = DarkMode.AUTO
-    /** 缓存模式，见 [WebSettings.LOAD_DEFAULT] / LOAD_CACHE_ELSE_NETWORK / LOAD_NO_CACHE / LOAD_CACHE_ONLY */
     var cacheMode: Int = WebSettings.LOAD_DEFAULT
+    var disableScrollBars: Boolean = false
+    var disableLongPressSelection: Boolean = false
 
     val assetRoutes = mutableListOf<Pair<String, String>>()
 
@@ -40,7 +42,9 @@ class BitwebcSettings {
             DarkMode.OFF -> false
             DarkMode.AUTO -> (webView.context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         }
-        WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, allowDark)
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, allowDark)
+        }
         settings.javaScriptEnabled = javaScriptEnabled
         settings.domStorageEnabled = domStorageEnabled
         settings.databaseEnabled = databaseEnabled
@@ -53,7 +57,6 @@ class BitwebcSettings {
         settings.cacheMode = cacheMode
         settings.javaScriptCanOpenWindowsAutomatically = true
         settings.mediaPlaybackRequiresUserGesture = false
-        // false：新窗口链接（target="_blank" / window.open）在当前 WebView 内打开，避免“同一 WebView 不能作为自己的弹窗”异常
         settings.setSupportMultipleWindows(false)
         val fullUa = customUserAgent?.takeIf { it.isNotBlank() }
         if (fullUa != null) {
@@ -62,6 +65,17 @@ class BitwebcSettings {
             settings.userAgentString = settings.userAgentString + " " + userAgentSuffix
         }
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+
+        if (disableScrollBars) {
+            webView.isVerticalScrollBarEnabled = false
+            webView.isHorizontalScrollBarEnabled = false
+            webView.overScrollMode = WebView.OVER_SCROLL_NEVER
+        }
+        if (disableLongPressSelection) {
+            webView.isLongClickable = false
+            webView.setOnLongClickListener { true }
+            webView.setOnCreateContextMenuListener(null)
+        }
     }
 
     fun useCustomUserAgent(fullUserAgent: String) {
@@ -72,8 +86,9 @@ class BitwebcSettings {
         customUserAgent = null
     }
 
-    /** 设置缓存模式：LOAD_DEFAULT / LOAD_CACHE_ELSE_NETWORK / LOAD_NO_CACHE / LOAD_CACHE_ONLY */
     fun cacheMode(mode: Int) = apply { cacheMode = mode }
+    fun disableScrollBars(disable: Boolean = true) = apply { disableScrollBars = disable }
+    fun disableLongPressSelection(disable: Boolean = true) = apply { disableLongPressSelection = disable }
 }
 
 class InterceptorsConfig(private val routes: MutableList<Pair<String, String>>) {

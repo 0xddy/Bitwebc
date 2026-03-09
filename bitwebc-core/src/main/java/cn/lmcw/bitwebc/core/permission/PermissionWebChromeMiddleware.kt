@@ -8,14 +8,12 @@ import android.webkit.WebView
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import cn.lmcw.bitwebc.core.client.MiddlewareWebChromeBase
+import cn.lmcw.bitwebc.core.extensions.toAndroidPermission
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-/**
- * 在 WebChromeClient 链中拦截地理定位与 [PermissionRequest]（如 WebRTC），
- * 通过 [PermissionResultFragment] 向系统申请权限后回调 H5。
- */
+/** 拦截地理定位/PermissionRequest，通过 PermissionResultFragment 申请权限 */
 class PermissionWebChromeMiddleware(
     private val activity: FragmentActivity,
     private val permissionFragment: PermissionResultFragment?,
@@ -46,7 +44,7 @@ class PermissionWebChromeMiddleware(
             return
         }
         val resources = request.resources ?: emptyArray()
-        val permissions = resources.mapNotNull { resourceToAndroidPermission(it) }.distinct().toTypedArray()
+        val permissions = resources.mapNotNull { it.toAndroidPermission() }.distinct().toTypedArray()
         if (permissions.isEmpty()) {
             request.deny()
             return
@@ -64,9 +62,4 @@ class PermissionWebChromeMiddleware(
         }
     }
 
-    private fun resourceToAndroidPermission(resource: String): String? = when (resource) {
-        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> Manifest.permission.CAMERA
-        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> Manifest.permission.RECORD_AUDIO
-        else -> null
-    }
 }

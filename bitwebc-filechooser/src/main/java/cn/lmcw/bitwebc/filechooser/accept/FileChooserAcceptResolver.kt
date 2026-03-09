@@ -2,9 +2,7 @@ package cn.lmcw.bitwebc.filechooser.accept
 
 import java.util.Locale
 
-/**
- * 解析 &lt;input type="file"&gt; 的 accept 与 mode，用于决定打开相册/相机/文档等。
- */
+/** 解析 input[type=file] 的 accept/mode */
 object FileChooserAcceptResolver {
 
     fun normalizeAcceptTypes(raw: Array<String>?): List<String> {

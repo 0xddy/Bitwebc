@@ -1,48 +1,59 @@
 package cn.lmcw.bitwebc.download.handler
 
 import android.Manifest
+import android.content.Context
+import android.util.Log
 import androidx.activity.ComponentActivity
-import cn.lmcw.bitwebc.core.api.IDownloadHandler
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.lifecycleScope
+import androidx.core.content.ContextCompat
+import cn.lmcw.bitwebc.core.api.DownloadHandler
 import cn.lmcw.bitwebc.download.config.DownloadConfig
 import cn.lmcw.bitwebc.download.model.DownloadRequest
 import cn.lmcw.bitwebc.download.model.DownloadTaskState
-import cn.lmcw.bitwebc.download.model.DownloadTaskStatus
 import cn.lmcw.bitwebc.download.notification.DownloadNotificationHelper
 import cn.lmcw.bitwebc.download.storage.DownloadStorage
 import cn.lmcw.bitwebc.download.ext.guessFileName
+import cn.lmcw.bitwebc.download.ext.normalizeMimeType
+import cn.lmcw.bitwebc.download.ext.resolveDownloadFileName
+import cn.lmcw.bitwebc.download.ui.DefaultDownloadConfirmUi
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Request
+import java.lang.ref.WeakReference
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArraySet
 
-@OptIn(FlowPreview::class)
 class BitwebcDownloadHandler(
-    private val activity: ComponentActivity,
+    activity: ComponentActivity,
     private val config: DownloadConfig = DownloadConfig(),
     private val eventReporter: ((BitwebcEvent) -> Unit)? = null
-) : IDownloadHandler {
+) : DownloadHandler {
 
-    private val storage: DownloadStorage = config.resolveStorage(activity)
+    private val activityRef = WeakReference(activity)
+    private val appContext = activity.applicationContext
+
+    private val storage: DownloadStorage = config.resolveStorage(appContext)
+
+    companion object {
+        private const val TAG = "BitwebcDownload"
+        private val handlersByTaskId = ConcurrentHashMap<String, BitwebcDownloadHandler>()
+
+        internal fun cancelRegisteredTask(taskId: String) {
+            handlersByTaskId[taskId]?.cancel(taskId)
+        }
+    }
     private val notificationHelper = DownloadNotificationHelper(
-        context = activity,
+        context = appContext,
         channelId = config.notificationChannelId,
         channelName = config.notificationChannelName,
         channelDescription = config.notificationChannelDescription
@@ -50,7 +61,6 @@ class BitwebcDownloadHandler(
 
     private val taskStateMap = MutableStateFlow<Map<String, DownloadTaskState>>(emptyMap())
 
-    /** 与 Activity 生命周期解耦，支持后台继续下载 */
     private val downloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val requests = ConcurrentHashMap<String, DownloadRequest>()
@@ -58,34 +68,13 @@ class BitwebcDownloadHandler(
     private val runningCalls = ConcurrentHashMap<String, Call>()
     private val semaphore = Semaphore(config.maxConcurrentDownloads.coerceAtLeast(1))
 
-    private val progressFlow = MutableSharedFlow<ProgressPayload>(replay = 1, extraBufferCapacity = 64)
-    private var pendingPermission: CompletableDeferred<Boolean>? = null
-
-    private val requestPermissionLauncher = activity.registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        pendingPermission?.complete(granted)
-        pendingPermission = null
-    }
-
-    /** 进度通知收集使用的作用域：可配置为应用级以在后台继续更新通知 */
-    private val progressCollectorScope: CoroutineScope = config.progressScope ?: activity.lifecycleScope
+    private val completedNotificationIds = CopyOnWriteArraySet<Int>()
+    private val cancelledTaskIds = CopyOnWriteArraySet<String>()
+    private val lastReportedProgress = ConcurrentHashMap<String, Int>()
 
     init {
+        Log.d(TAG, "init: channel=$config.notificationChannelId")
         notificationHelper.ensureChannel()
-        progressCollectorScope.launch {
-            progressFlow
-                .debounce(500)
-                .distinctUntilChanged()
-                .collect { payload ->
-                    notificationHelper.showProgress(
-                        payload.notificationId,
-                        payload.fileName,
-                        payload.downloadedBytes,
-                        payload.totalBytes
-                    )
-                }
-        }
     }
 
     override fun onDownloadStart(
@@ -95,6 +84,7 @@ class BitwebcDownloadHandler(
         mimetype: String?,
         contentLength: Long
     ) {
+        Log.d(TAG, "onDownloadStart: url=$url contentLength=$contentLength")
         if (url.isNullOrBlank()) return
         enqueue(
             DownloadRequest(
@@ -107,65 +97,142 @@ class BitwebcDownloadHandler(
         )
     }
 
-    fun enqueue(request: DownloadRequest): String {
-        val taskId = UUID.randomUUID().toString()
+    private fun showDownloadConfirmDialog(
+        request: DownloadRequest,
+        onConfirm: () -> Unit
+    ) {
+        val confirmUi = config.confirmUi ?: DefaultDownloadConfirmUi()
+        activityRef.get()?.let { act ->
+            if (act.isFinishing || act.isDestroyed) return@let
+            act.runOnUiThread {
+                confirmUi.confirm(act, request) { confirmed ->
+                    if (confirmed) onConfirm()
+                }
+            }
+        } ?: run {
+            Log.w(TAG, "showDownloadConfirmDialog: Activity is dead, fallback to direct enqueue")
+            onConfirm()
+        }
+    }
+
+    private fun enqueueInternal(taskId: String, request: DownloadRequest) {
         requests[taskId] = request
-        updateTask(
-            taskId,
-            DownloadTaskState(
-                id = taskId,
-                url = request.url,
-                status = DownloadTaskStatus.QUEUED
-            )
-        )
+        handlersByTaskId[taskId] = this
+        cancelledTaskIds.remove(taskId)
+        lastReportedProgress.remove(taskId)
+        updateTask(taskId, DownloadTaskState.Queued(id = taskId, url = request.url))
+        Log.d(TAG, "enqueue: taskId=$taskId url=${request.url.take(80)}")
         eventReporter?.invoke(BitwebcEvent.DownloadQueued(taskId, request.url))
         startTask(taskId)
+    }
+
+    fun enqueue(request: DownloadRequest): String {
+        val taskId = UUID.randomUUID().toString()
+        if (config.confirmBeforeDownload) {
+            showDownloadConfirmDialog(request) {
+                enqueueInternal(taskId, request)
+            }
+        } else {
+            enqueueInternal(taskId, request)
+        }
         return taskId
     }
 
     fun cancel(taskId: String) {
+        Log.d(TAG, "cancel: taskId=$taskId")
+        cancelledTaskIds.add(taskId)
+        val notificationsEnabled = areNotificationsEnabled()
+        requests[taskId]?.let { request ->
+            val notificationId = (request.url + taskId).hashCode()
+            completedNotificationIds.add(notificationId)
+            if (notificationsEnabled) {
+                notificationHelper.showCancelled(notificationId, taskStateMap.value[taskId]?.fileName ?: request.url.guessFileName(request.contentDisposition, request.mimeType))
+            }
+        }
+        updateTask(taskId) { current ->
+            DownloadTaskState.Cancelled(current.id, current.url, current.fileName, current.createdAtMillis)
+        }
         runningCalls[taskId]?.cancel()
         runningJobs[taskId]?.cancel()
-        updateTask(taskId) { it.copy(status = DownloadTaskStatus.CANCELLED, error = "用户取消下载") }
+        handlersByTaskId.remove(taskId)
+        lastReportedProgress.remove(taskId)
+        runningCalls.remove(taskId)
+        runningJobs.remove(taskId)
+        requests.remove(taskId)
     }
 
+    /**
+     * 暂停下载任务。内部会取消当前的 HTTP 请求和协程 Job。
+     * 不支持断点续传——调用 [resume] 后将从头重新下载。
+     */
     fun pause(taskId: String) {
+        Log.d(TAG, "pause: taskId=$taskId")
         runningCalls[taskId]?.cancel()
         runningJobs[taskId]?.cancel()
-        updateTask(taskId) { it.copy(status = DownloadTaskStatus.PAUSED, error = "任务已暂停") }
+        updateTask(taskId) { current ->
+            DownloadTaskState.Paused(current.id, current.url, current.fileName, current.createdAtMillis)
+        }
     }
 
+    /**
+     * 恢复已暂停的下载任务。注意：不支持断点续传，resume 会从头重新下载整个文件。
+     * 如需断点续传能力，请使用系统 DownloadManager 或其他支持 Range 请求的下载实现。
+     */
     fun resume(taskId: String) {
         val current = taskStateMap.value[taskId] ?: return
-        if (current.status != DownloadTaskStatus.PAUSED) return
-        updateTask(taskId) { it.copy(status = DownloadTaskStatus.QUEUED, error = null) }
+        if (current !is DownloadTaskState.Paused) return
+        Log.d(TAG, "resume: taskId=$taskId")
+        updateTask(taskId, DownloadTaskState.Queued(current.id, current.url, current.fileName, current.createdAtMillis))
         startTask(taskId)
     }
 
     fun retry(taskId: String) {
         val current = taskStateMap.value[taskId] ?: return
-        if (current.status != DownloadTaskStatus.FAILED && current.status != DownloadTaskStatus.CANCELLED) return
-        updateTask(taskId) { it.copy(status = DownloadTaskStatus.QUEUED, error = null, downloadedBytes = 0) }
-        startTask(taskId)
+        when (current) {
+            is DownloadTaskState.Failed, is DownloadTaskState.Cancelled -> {
+                Log.d(TAG, "retry: taskId=$taskId")
+                updateTask(taskId, DownloadTaskState.Queued(current.id, current.url, null, current.createdAtMillis))
+                startTask(taskId)
+            }
+            else -> return
+        }
     }
 
     private fun startTask(taskId: String) {
         val request = requests[taskId] ?: return
+        Log.d(TAG, "startTask: taskId=$taskId url=${request.url.take(60)}")
         val job = downloadScope.launch {
-            if (!withContext(Dispatchers.Main.immediate) { ensureNotificationPermission() }) {
-                updateTask(taskId) { it.copy(status = DownloadTaskStatus.FAILED, error = "通知权限被拒绝") }
+            val notificationsEnabled = areNotificationsEnabled()
+            if (!notificationsEnabled) {
+                Log.w(TAG, "startTask: taskId=$taskId notifications disabled, download silently")
                 eventReporter?.invoke(BitwebcEvent.DownloadPermissionDenied(taskId))
-                return@launch
             }
             semaphore.withPermit {
                 runCatching {
-                    downloadFile(taskId, request)
+                    downloadFile(taskId, request, notificationsEnabled)
                 }.onFailure { e ->
-                    val status = taskStateMap.value[taskId]?.status
-                    if (status == DownloadTaskStatus.CANCELLED || status == DownloadTaskStatus.PAUSED) return@onFailure
+                    val current = taskStateMap.value[taskId]
+                    if (taskId in cancelledTaskIds || current is DownloadTaskState.Cancelled || current is DownloadTaskState.Paused) {
+                        Log.d(TAG, "startTask: taskId=$taskId ignored failure (cancelled/paused)")
+                        handlersByTaskId.remove(taskId)
+                        lastReportedProgress.remove(taskId)
+                        requests.remove(taskId)
+                        return@onFailure
+                    }
                     val msg = e.message ?: "下载失败"
-                    updateTask(taskId) { it.copy(status = DownloadTaskStatus.FAILED, error = msg) }
-                    notificationHelper.showFailed((request.url + taskId).hashCode(), msg)
+                    Log.e(TAG, "startTask: taskId=$taskId failed msg=$msg", e)
+                    updateTask(taskId) { s ->
+                        DownloadTaskState.Failed(s.id, s.url, s.fileName, e, s.createdAtMillis)
+                    }
+                    val notificationId = (request.url + taskId).hashCode()
+                    completedNotificationIds.add(notificationId)
+                    handlersByTaskId.remove(taskId)
+                    cancelledTaskIds.remove(taskId)
+                    lastReportedProgress.remove(taskId)
+                    requests.remove(taskId)
+                    if (notificationsEnabled) {
+                        notificationHelper.showFailed(notificationId, msg)
+                    }
                     eventReporter?.invoke(BitwebcEvent.DownloadFailed(taskId, msg))
                 }.also {
                     runningJobs.remove(taskId)
@@ -176,44 +243,74 @@ class BitwebcDownloadHandler(
         runningJobs[taskId] = job
     }
 
-    private suspend fun downloadFile(taskId: String, request: DownloadRequest) = withContext(Dispatchers.IO) {
+    private suspend fun downloadFile(taskId: String, request: DownloadRequest, notificationsEnabled: Boolean) = withContext(Dispatchers.IO) {
+        Log.d(TAG, "downloadFile: taskId=$taskId start url=${request.url.take(60)}")
         val httpRequest = Request.Builder().url(request.url).apply {
             request.userAgent?.takeIf { it.isNotBlank() }?.let { header("User-Agent", it) }
         }.build()
         val call = config.okHttpClient.newCall(httpRequest)
         runningCalls[taskId] = call
         call.execute().use { response ->
-            if (!response.isSuccessful) throw IllegalStateException("HTTP ${response.code}")
+            if (!response.isSuccessful) {
+                Log.e(TAG, "downloadFile: taskId=$taskId HTTP ${response.code}")
+                throw IllegalStateException("HTTP ${response.code}")
+            }
+            val responseContentDisposition = response.header("Content-Disposition")
+            val resolvedUrl = response.request.url.toString()
             val resolvedMime = response.body?.contentType()?.toString()
                 ?: request.mimeType
                 ?: "application/octet-stream"
-            val fileName = request.url.guessFileName(request.contentDisposition, resolvedMime)
+            val fileName = resolveDownloadFileName(
+                request.url,
+                resolvedUrl,
+                responseContentDisposition ?: request.contentDisposition,
+                resolvedMime
+            )
+            val storageMimeType = resolvedMime.normalizeMimeType(fileName)
             val total = if (request.contentLength > 0) request.contentLength
                 else response.body?.contentLength() ?: -1L
-            val notificationId = (request.url + fileName).hashCode()
+            val notificationId = (request.url + taskId).hashCode()
+            Log.d(TAG, "downloadFile: taskId=$taskId fileName=$fileName total=$total")
 
-            val sink = storage.createSink(activity, fileName, resolvedMime)
+            val sink = storage.createSink(appContext, fileName, storageMimeType)
                 ?: throw IllegalStateException("无法创建下载目标")
 
-            updateTask(taskId) {
-                it.copy(fileName = fileName, status = DownloadTaskStatus.RUNNING, totalBytes = total, error = null)
+            updateTask(taskId) { current ->
+                DownloadTaskState.Running(current.id, current.url, fileName, 0L, total, current.createdAtMillis)
             }
+            withContext(Dispatchers.Main.immediate) {
+                if (notificationsEnabled) {
+                    notificationHelper.showProgress(notificationId, taskId, fileName, 0L, total)
+                }
+            }
+            lastReportedProgress[taskId] = 0
             if (total >= config.foregroundPolicy.largeFileThresholdBytes) {
+                Log.d(TAG, "downloadFile: taskId=$taskId largeFile callback")
                 config.foregroundPolicy.onLargeFileTask?.invoke(taskId, fileName)
             }
 
+            var lastLogPercent = -1
             response.body?.byteStream()?.use { input ->
                 sink.outputStream.use { output ->
                     val buffer = ByteArray(config.bufferSizeBytes)
                     var downloaded = 0L
                     var read = input.read(buffer)
                     while (read >= 0) {
+                        if (taskId in cancelledTaskIds) return@withContext
                         output.write(buffer, 0, read)
                         downloaded += read
-                        updateTask(taskId) { it.copy(downloadedBytes = downloaded, totalBytes = total) }
-                        progressFlow.tryEmit(ProgressPayload(notificationId, taskId, fileName, downloaded, total))
+                        updateTask(taskId) { current ->
+                            when (current) {
+                                is DownloadTaskState.Running -> DownloadTaskState.Running(current.id, current.url, current.fileName, downloaded, total, current.createdAtMillis)
+                                else -> current
+                            }
+                        }
                         val progress = if (total > 0) ((downloaded * 100) / total).toInt().coerceIn(0, 100) else -1
-                        eventReporter?.invoke(BitwebcEvent.DownloadProgress(taskId, fileName, progress))
+                        maybeReportProgress(taskId, notificationId, fileName, downloaded, total, progress, notificationsEnabled)
+                        if (progress in 0..100 && (progress == 0 || progress == 100 || progress / 10 > lastLogPercent / 10)) {
+                            lastLogPercent = progress
+                            Log.d(TAG, "downloadFile: taskId=$taskId progress=$progress% ($downloaded/$total)")
+                        }
                         read = input.read(buffer)
                     }
                     output.flush()
@@ -221,21 +318,63 @@ class BitwebcDownloadHandler(
             } ?: throw IllegalStateException("响应体为空")
 
             sink.close()
-            updateTask(taskId) { it.copy(status = DownloadTaskStatus.SUCCESS, downloadedBytes = total.coerceAtLeast(0)) }
-            notificationHelper.showSuccess(notificationId, fileName, sink.uri, resolvedMime)
+            updateTask(taskId) { current ->
+                when (current) {
+                    is DownloadTaskState.Running -> DownloadTaskState.Success(current.id, current.url, current.fileName, current.totalBytes, current.createdAtMillis)
+                    else -> current
+                }
+            }
+            Log.d(TAG, "downloadFile: taskId=$taskId success fileName=$fileName uri=${sink.uri}")
+            completedNotificationIds.add(notificationId)
+            handlersByTaskId.remove(taskId)
+            cancelledTaskIds.remove(taskId)
+            lastReportedProgress.remove(taskId)
+            requests.remove(taskId)
+            if (notificationsEnabled) {
+                notificationHelper.showSuccess(notificationId, fileName, sink.uri, storageMimeType)
+            }
             eventReporter?.invoke(BitwebcEvent.DownloadSuccess(taskId, fileName))
         }
     }
 
-    private suspend fun ensureNotificationPermission(): Boolean {
-        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return true
-        if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+    private fun maybeReportProgress(
+        taskId: String,
+        notificationId: Int,
+        fileName: String,
+        downloadedBytes: Long,
+        totalBytes: Long,
+        progress: Int,
+        notificationsEnabled: Boolean
+    ) {
+        if (notificationId in completedNotificationIds) return
+        if (progress < 0) {
+            if (notificationsEnabled) {
+                notificationHelper.showProgress(notificationId, taskId, fileName, downloadedBytes, totalBytes)
+            }
+            eventReporter?.invoke(BitwebcEvent.DownloadProgress(taskId, fileName, progress))
+            return
+        }
+        val previous = lastReportedProgress.put(taskId, progress)
+        if (previous == progress) return
+        if (notificationsEnabled) {
+            notificationHelper.showProgress(notificationId, taskId, fileName, downloadedBytes, totalBytes)
+        }
+        eventReporter?.invoke(BitwebcEvent.DownloadProgress(taskId, fileName, progress))
+    }
+
+    private fun areNotificationsEnabled(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) {
+            Log.d(TAG, "areNotificationsEnabled: SDK < 33, granted")
+            return true
+        }
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) return true
-        val deferred = CompletableDeferred<Boolean>()
-        pendingPermission = deferred
-        requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        return deferred.await()
+        ) {
+            Log.d(TAG, "areNotificationsEnabled: already granted")
+            return true
+        }
+        Log.d(TAG, "areNotificationsEnabled: denied")
+        return false
     }
 
     private fun updateTask(taskId: String, value: DownloadTaskState) {
@@ -251,11 +390,4 @@ class BitwebcDownloadHandler(
         }
     }
 
-    private data class ProgressPayload(
-        val notificationId: Int,
-        val taskId: String,
-        val fileName: String,
-        val downloadedBytes: Long,
-        val totalBytes: Long
-    )
 }

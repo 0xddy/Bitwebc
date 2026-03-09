@@ -54,6 +54,10 @@
             var el = document.getElementById("webmessage-log");
             el.textContent = (el.textContent ? el.textContent + '\n' : '') + text;
         }
+
+        function triggerDownload() {
+            window.location.href = 'https://storage.7x24cc.com/storage-server/presigned/ss1/a6-online-fileupload/newMediaFile/3304B15_773_20260225newMediaFile.mp4';
+        }
     </script>
 </head>
 <body>
@@ -61,6 +65,7 @@
 <p class="tip">本页通过 <strong>静态资源拦截</strong> 从 assets/offline_pkg/ 加载，未走网络。</p>
 
 <button onclick="callNative()">JS 调用 Native Toast</button>
+<button onclick="triggerDownload()">网页内触发下载示例视频</button>
 <input type="file" multiple />
 <p class="tip">Native 注入消息：<span id="native-msg">等待中...</span></p>
 
