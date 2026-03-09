@@ -52,7 +52,9 @@ class DefaultWebViewClient(
         val uri = request.url ?: return super.shouldOverrideUrlLoading(view, request)
         if (schemeRouter.handle(view, uri)) return true
         val scheme = uri.scheme?.lowercase()
-        if (scheme == "http" || scheme == "https" || scheme == "about") return false
+        if (scheme == "http" || scheme == "https" || scheme == "about") {
+            return super.shouldOverrideUrlLoading(view, request)
+        }
         eventReporter?.invoke(
             BitwebcEvent.SchemeFallback(
                 rawUrl = uri.toString(),
