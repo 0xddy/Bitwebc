@@ -1,4 +1,5 @@
-# 推送 v* 标签时自动构建库模块并创建 GitHub Release；也可在 Actions 页手动运行。Release 版本号取自 gradle.properties 的 VERSION_NAME。
+# 推送 v* 标签时自动构建库 AAR + sample 调试包，并创建 GitHub Release；也可在 Actions 页手动运行。
+# Release 版本号取自 gradle.properties 的 VERSION_NAME；应与打的标签一致（如 VERSION_NAME=0.2.0 → 标签 v0.2.0）。
 name: Release
 
 on:
@@ -24,6 +25,7 @@ jobs:
           if [[ -z "$VERSION_NAME" ]]; then echo "::error::VERSION_NAME not found in gradle.properties"; exit 1; fi
           if [[ "$VERSION_NAME" != v* ]]; then RELEASE_TAG="v$VERSION_NAME"; else RELEASE_TAG="$VERSION_NAME"; fi
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "Release tag: $RELEASE_TAG"
 
       - name: Set up JDK 17
@@ -33,24 +35,32 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build library AARs
+      - name: Build library AARs and sample APK
         run: |
           ./gradlew :bitwebc-core:assembleRelease \
             :bitwebc-filechooser:assembleRelease \
             :bitwebc-download:assembleRelease \
+            :sample:assembleDebug \
             --no-daemon
 
-      - name: Collect AAR artifacts
+      - name: Collect release assets
         run: |
           mkdir -p release-aars
           cp bitwebc-core/build/outputs/aar/bitwebc-core-release.aar release-aars/
           cp bitwebc-filechooser/build/outputs/aar/bitwebc-filechooser-release.aar release-aars/
           cp bitwebc-download/build/outputs/aar/bitwebc-download-release.aar release-aars/
+          cp sample/build/outputs/apk/debug/sample-debug.apk \
+            "release-aars/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk"
 
-      - name: Create GitHub Release and upload AARs
+      - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
@@ -59,5 +69,6 @@ jobs:
             release-aars/bitwebc-core-release.aar
             release-aars/bitwebc-filechooser-release.aar
             release-aars/bitwebc-download-release.aar
+            release-aars/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
