@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Bitwebc Demo</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        button { padding: 10px 14px; margin-right: 10px; margin-bottom: 10px; }
+        .tip { color: #555; margin-top: 16px; }
+    </style>
+    <script>
+        function callNative() {
+            if (window.BitwebcApp && window.BitwebcApp.showToast) {
+                window.BitwebcApp.showToast("你好，Bitwebc");
+            } else {
+                alert("Bridge 未注入");
+            }
+        }
+
+        function onNativeReady(message) {
+            const el = document.getElementById("native-msg");
+            el.textContent = message;
+        }
+    </script>
+</head>
+<body>
+<h2>Bitwebc 常规示例</h2>
+<button onclick="callNative()">JS 调用 Native Toast</button>
+<input type="file" multiple />
+<p class="tip">Native 注入消息：<span id="native-msg">等待中...</span></p>
+</body>
+</html>

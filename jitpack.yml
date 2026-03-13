@@ -1,0 +1,6 @@
+# JitPack 构建配置：使用 JDK 17（Android Gradle Plugin 要求）
+jdk:
+  - openjdk17
+# 仅发布库模块到本地 Maven，供 JitPack 采集（不构建 sample）
+install:
+  - ./gradlew :bitwebc-core:publishReleasePublicationToMavenLocal :bitwebc-filechooser:publishReleasePublicationToMavenLocal :bitwebc-download:publishReleasePublicationToMavenLocal

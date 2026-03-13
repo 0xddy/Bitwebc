@@ -1,0 +1,29 @@
+# Built/compiled
+*.iml
+.gradle
+/build
+**/build/
+/sample/release/
+/captures
+.externalNativeBuild
+.cxx
+*.class
+*.jar
+!gradle/wrapper/*.jar
+*.apk
+*.ap_
+*.dex
+*.hprof
+out/
+
+# Local config
+local.properties
+/local.properties
+
+# IDE - IntelliJ / Android Studio
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db

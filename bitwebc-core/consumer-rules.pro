@@ -1,0 +1,1 @@
+# Bitwebc core consumer rules.
