@@ -1,5 +1,5 @@
 # 推送 v* 标签时自动构建库 AAR + sample 调试包，并创建 GitHub Release；也可在 Actions 页手动运行。
-# Release 版本号取自 gradle.properties 的 VERSION_NAME；应与打的标签一致（如 VERSION_NAME=0.2.0 → 标签 v0.2.0）。
+# 手动运行时可在「版本号」中填写（如 0.2.0）；留空则与打标签一致，使用 gradle.properties 的 VERSION_NAME。
 name: Release
 
 on:
@@ -7,6 +7,12 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 0.2.0）；留空则使用 gradle.properties 的 VERSION_NAME'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -20,13 +26,23 @@ jobs:
 
       - name: Read VERSION_NAME and set release tag
         id: version
+        env:
+          MANUAL_VERSION: ${{ github.event.inputs.version || '' }}
         run: |
-          VERSION_NAME=$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2)
-          if [[ -z "$VERSION_NAME" ]]; then echo "::error::VERSION_NAME not found in gradle.properties"; exit 1; fi
+          MANUAL_TRIMMED=$(echo "$MANUAL_VERSION" | tr -d '[:space:]')
+          if [[ -n "$MANUAL_TRIMMED" ]]; then
+            VERSION_NAME="$MANUAL_TRIMMED"
+          else
+            VERSION_NAME=$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2)
+          fi
+          if [[ -z "$VERSION_NAME" ]]; then echo "::error::VERSION_NAME 未设置（请填写版本号或保证 gradle.properties 中有 VERSION_NAME）"; exit 1; fi
           if [[ "$VERSION_NAME" != v* ]]; then RELEASE_TAG="v$VERSION_NAME"; else RELEASE_TAG="$VERSION_NAME"; fi
+          # APK 文件名用无 v 前缀的版本号
+          VERSION_FOR_FILE="$VERSION_NAME"
+          [[ "$VERSION_FOR_FILE" == v* ]] && VERSION_FOR_FILE="${VERSION_FOR_FILE#v}"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION_NAME" >> "$GITHUB_OUTPUT"
-          echo "Release tag: $RELEASE_TAG"
+          echo "version=$VERSION_FOR_FILE" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $RELEASE_TAG (version label: $VERSION_FOR_FILE)"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
