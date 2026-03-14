@@ -178,6 +178,8 @@ class MainActivity : AppCompatActivity() {
                                 Log.d(TAG, "页面加载完成: ${event.url}")
                             is BitwebcEvent.PageError ->
                                 Log.e(TAG, "页面错误: ${event.url} | ${event.message}")
+                            is BitwebcEvent.HttpError ->
+                                Log.w(TAG, "HTTP 状态: ${event.url} | ${event.statusCode}")
                             is BitwebcEvent.SslError ->
                                 Log.e(TAG, "SSL 错误: ${event.url} | ${event.message}")
                             is BitwebcEvent.DownloadQueued ->
