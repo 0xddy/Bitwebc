@@ -13,6 +13,7 @@ import androidx.core.graphics.toColorInt
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.LifecycleOwner
 import cn.lmcw.bitwebc.core.api.DownloadHandler
+import cn.lmcw.bitwebc.core.api.ErrorPolicy
 import cn.lmcw.bitwebc.core.api.FileChooserHandler
 import cn.lmcw.bitwebc.core.api.WebLayout
 import cn.lmcw.bitwebc.core.api.WebLifecycle
@@ -22,6 +23,7 @@ import cn.lmcw.bitwebc.core.bridge.BitwebcJsBridge
 import cn.lmcw.bitwebc.core.client.AssetsRouteInterceptor
 import cn.lmcw.bitwebc.core.client.DefaultWebChromeClient
 import cn.lmcw.bitwebc.core.client.DefaultWebViewClient
+import cn.lmcw.bitwebc.core.client.ErrorPolicies
 import cn.lmcw.bitwebc.core.event.BitwebcEventHub
 import cn.lmcw.bitwebc.core.event.BitwebcEventListener
 import cn.lmcw.bitwebc.core.lifecycle.BitwebcLifecycleObserver
@@ -61,6 +63,7 @@ class BitwebcBuilder internal constructor(
     private val jsBridgeList = mutableListOf<Pair<String, Any>>()
     private val eventListeners = mutableListOf<BitwebcEventListener>()
     private val resourceInterceptors = mutableListOf<WebResourceInterceptor>()
+    private var errorPolicy: ErrorPolicy = ErrorPolicies.standard
     private val settings = BitwebcSettings()
 
     fun loadUrl(url: String) = apply { this.initialUrl = url }
@@ -129,6 +132,21 @@ class BitwebcBuilder internal constructor(
     fun nativeUiDelegate(delegate: WebUIProvider) = apply { nativeUiDelegate = delegate }
 
     /**
+     * 错误页显示策略。控制 `onReceivedError` / `onReceivedHttpError` 触发时
+     * 是否显示错误页。默认使用 [ErrorPolicies.standard]（HTTP 错误不触发，
+     * 网络错误仅主框架导航 URL 匹配时触发）。
+     *
+     * ```
+     * errorPolicy(ErrorPolicies.strict)
+     * errorPolicy(ErrorPolicies.strictIgnoring(403, 429))
+     * errorPolicy { ctx ->
+     *     ctx is ErrorContext.Network && ctx.request.isForMainFrame
+     * }
+     * ```
+     */
+    fun errorPolicy(policy: ErrorPolicy) = apply { this.errorPolicy = policy }
+
+    /**
      * SSL 错误放行策略。返回 true 放行（proceed），返回 false 走默认拦截流程（错误页 + cancel）。
      *
      * 优先级高于 [nativeUiDelegate] 的 `showSslError`。
@@ -181,6 +199,7 @@ class BitwebcBuilder internal constructor(
             messagePortSetup = messagePortSetup,
             eventReporter = eventHub::emit,
             resourceInterceptors = resourceInterceptors.toList(),
+            errorPolicy = errorPolicy,
             next = effectiveNextWebClient
         )
         val fileChooser: FileChooserHandler? = customFileChooserHandler

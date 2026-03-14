@@ -14,6 +14,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.net.toUri
 import androidx.webkit.WebMessagePortCompat
+import cn.lmcw.bitwebc.core.api.ErrorContext
+import cn.lmcw.bitwebc.core.api.ErrorPolicy
 import cn.lmcw.bitwebc.core.api.WebIndicator
 import cn.lmcw.bitwebc.core.api.WebLayout
 import cn.lmcw.bitwebc.core.api.WebResourceInterceptor
@@ -31,10 +33,13 @@ class DefaultWebViewClient(
     private val messagePortSetup: ((WebView, WebMessagePortCompat, WebMessagePortCompat) -> Unit)? = null,
     private val eventReporter: ((BitwebcEvent) -> Unit)? = null,
     private val resourceInterceptors: List<WebResourceInterceptor> = emptyList(),
+    private val errorPolicy: ErrorPolicy = ErrorPolicies.standard,
     next: WebViewClient? = null
 ) : MiddlewareWebClientBase(next) {
 
     private var recoveringFromError = false
+    private val errorUrls = mutableSetOf<String>()
+    private val pendingUrls = mutableSetOf<String>()
 
     override fun shouldInterceptRequest(
         view: WebView,
@@ -67,6 +72,7 @@ class DefaultWebViewClient(
     }
 
     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+        url?.let { pendingUrls += it }
         if (!recoveringFromError) {
             webLayout.showWebContent()
         }
@@ -76,16 +82,20 @@ class DefaultWebViewClient(
     }
 
     override fun onPageCommitVisible(view: WebView, url: String?) {
-        if (recoveringFromError) {
-            recoveringFromError = false
-            webLayout.showWebContent()
-        }
         super.onPageCommitVisible(view, url)
     }
 
     override fun onPageFinished(view: WebView, url: String?) {
         indicator.onPageFinished()
         CookieManager.getInstance().flush()
+        if (url != null && !errorUrls.contains(url) && pendingUrls.contains(url)) {
+            if (recoveringFromError) {
+                recoveringFromError = false
+                webLayout.showWebContent()
+            }
+        }
+        pendingUrls -= url.orEmpty()
+        errorUrls.clear()
         eventReporter?.invoke(BitwebcEvent.PageFinished(url))
         messagePortSetup?.let { setup ->
             BitwebcWebMessagePort.setupOnPageFinished(view, url) { receivePort, sendToJsPort ->
@@ -101,13 +111,16 @@ class DefaultWebViewClient(
         error: WebResourceError
     ) {
         super.onReceivedError(view, request, error)
-        if (request.isForMainFrame) {
+        val ctx = ErrorContext.Network(view, request, error)
+        if (errorPolicy.shouldShowError(ctx)) {
+            val failingUrl = request.url?.toString()
+            failingUrl?.let { errorUrls += it }
             recoveringFromError = false
             showErrorAndRetry(view, error.description?.toString())
             indicator.reset()
             eventReporter?.invoke(
                 BitwebcEvent.PageError(
-                    url = request.url?.toString(),
+                    url = failingUrl,
                     message = error.description?.toString()
                 )
             )
@@ -120,7 +133,13 @@ class DefaultWebViewClient(
         errorResponse: WebResourceResponse
     ) {
         super.onReceivedHttpError(view, request, errorResponse)
-        if (request.isForMainFrame && errorResponse.statusCode >= 400) {
+        val requestUrl = request.url?.toString()
+        eventReporter?.invoke(
+            BitwebcEvent.HttpError(url = requestUrl, statusCode = errorResponse.statusCode)
+        )
+        val ctx = ErrorContext.Http(view, request, errorResponse)
+        if (errorPolicy.shouldShowError(ctx)) {
+            requestUrl?.let { errorUrls += it }
             recoveringFromError = false
             showErrorAndRetry(
                 view,
@@ -129,7 +148,7 @@ class DefaultWebViewClient(
             indicator.reset()
             eventReporter?.invoke(
                 BitwebcEvent.PageError(
-                    url = request.url?.toString(),
+                    url = requestUrl,
                     message = "HTTP ${errorResponse.statusCode}"
                 )
             )

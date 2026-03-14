@@ -4,6 +4,7 @@ sealed class BitwebcEvent {
     data class PageStarted(val url: String?) : BitwebcEvent()
     data class PageFinished(val url: String?) : BitwebcEvent()
     data class PageError(val url: String?, val message: String?) : BitwebcEvent()
+    data class HttpError(val url: String?, val statusCode: Int) : BitwebcEvent()
     data class SslError(val url: String?, val message: String?) : BitwebcEvent()
     data class SchemeFallback(val rawUrl: String?, val reason: String) : BitwebcEvent()
     data class RenderProcessGone(val didCrash: Boolean, val priorityAtExit: Int) : BitwebcEvent()
