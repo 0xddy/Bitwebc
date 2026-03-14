@@ -31,8 +31,8 @@ class DefaultWebLayout : WebLayout {
         }
         buildErrorView(context)
         rootView.addView(errorContainer, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
             Gravity.CENTER
         ))
         return rootView

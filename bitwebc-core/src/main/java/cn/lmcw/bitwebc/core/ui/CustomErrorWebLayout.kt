@@ -3,23 +3,38 @@ package cn.lmcw.bitwebc.core.ui
 import android.app.Activity
 import android.content.Context
 import android.view.Gravity
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.annotation.LayoutRes
 import cn.lmcw.bitwebc.core.api.WebLayout
 import cn.lmcw.bitwebc.core.extensions.detachFromParent
 import cn.lmcw.bitwebc.core.extensions.resolveIndicatorHeightPx
 
-/** ?????????errorView ????retryViewId ???? id?errorMessageViewId ???? TextView id */
-class CustomErrorWebLayout(
-    private val errorView: View,
-    private val retryViewId: Int = View.NO_ID,
-    private val errorMessageViewId: Int = View.NO_ID
+class CustomErrorWebLayout private constructor(
+    private var errorView: View?,
+    @LayoutRes private val layoutRes: Int,
+    private val retryViewId: Int,
+    private val errorMessageViewId: Int
 ) : WebLayout {
     private lateinit var rootView: FrameLayout
     private lateinit var webView: WebView
+    private lateinit var resolvedErrorView: View
+
+    constructor(
+        errorView: View,
+        retryViewId: Int = View.NO_ID,
+        errorMessageViewId: Int = View.NO_ID
+    ) : this(errorView, 0, retryViewId, errorMessageViewId)
+
+    constructor(
+        @LayoutRes layoutRes: Int,
+        retryViewId: Int = View.NO_ID,
+        errorMessageViewId: Int = View.NO_ID
+    ) : this(null, layoutRes, retryViewId, errorMessageViewId)
 
     override fun createRoot(context: Context): ViewGroup {
         rootView = FrameLayout(context).apply {
@@ -28,14 +43,15 @@ class CustomErrorWebLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
-        errorView.detachFromParent()
-        errorView.visibility = View.GONE
+        resolvedErrorView = errorView?.also { it.detachFromParent() }
+            ?: LayoutInflater.from(context).inflate(layoutRes, rootView, false)
+        errorView = null
+        resolvedErrorView.visibility = View.GONE
         rootView.addView(
-            errorView,
+            resolvedErrorView,
             FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
         return rootView
@@ -53,7 +69,7 @@ class CustomErrorWebLayout(
         rootView.addView(
             indicatorView,
             FrameLayout.LayoutParams(
-                0,
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 indicatorView.resolveIndicatorHeightPx(activity),
                 Gravity.TOP
             )
@@ -64,19 +80,19 @@ class CustomErrorWebLayout(
 
     override fun showWebContent() {
         webView.visibility = View.VISIBLE
-        errorView.visibility = View.GONE
+        resolvedErrorView.visibility = View.GONE
     }
 
     override fun showError(message: String?, onRetry: () -> Unit) {
         webView.visibility = View.GONE
-        errorView.visibility = View.VISIBLE
+        resolvedErrorView.visibility = View.VISIBLE
 
-        val messageView = errorView.findViewById<View>(errorMessageViewId) as? TextView
+        val messageView = resolvedErrorView.findViewById<View>(errorMessageViewId) as? TextView
         if (!message.isNullOrBlank() && messageView != null) {
             messageView.text = message
         }
 
-        val retryTarget = errorView.findViewById<View>(retryViewId) ?: errorView
+        val retryTarget = resolvedErrorView.findViewById<View>(retryViewId) ?: resolvedErrorView
         retryTarget.setOnClickListener { onRetry.invoke() }
     }
 

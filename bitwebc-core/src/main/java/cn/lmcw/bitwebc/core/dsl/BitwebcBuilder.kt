@@ -77,6 +77,14 @@ class BitwebcBuilder internal constructor(
             errorMessageViewId = errorMessageViewId
         )
     }
+    fun errorPage(block: ErrorPageOptions.() -> Unit) = apply {
+        val options = ErrorPageOptions().apply(block)
+        this.layout = CustomErrorWebLayout(
+            layoutRes = options.layoutRes,
+            retryViewId = options.retryViewId,
+            errorMessageViewId = options.errorMessageViewId
+        )
+    }
     fun customIndicator(indicator: cn.lmcw.bitwebc.core.api.WebIndicator) = apply { this.indicator = indicator }
     fun indicator(block: ProgressIndicatorOptions.() -> Unit) = apply {
         val options = ProgressIndicatorOptions().apply(block)
@@ -275,6 +283,20 @@ class ProgressIndicatorOptions internal constructor() {
     fun heightDp(dp: Int) = apply {
         heightDp = dp.coerceAtLeast(1)
     }
+}
+
+class ErrorPageOptions internal constructor() {
+    @androidx.annotation.LayoutRes
+    var layoutRes: Int = 0
+        private set
+    var retryViewId: Int = View.NO_ID
+        private set
+    var errorMessageViewId: Int = View.NO_ID
+        private set
+
+    fun layout(@androidx.annotation.LayoutRes resId: Int) = apply { layoutRes = resId }
+    fun retryView(@androidx.annotation.IdRes id: Int) = apply { retryViewId = id }
+    fun errorMessageView(@androidx.annotation.IdRes id: Int) = apply { errorMessageViewId = id }
 }
 
 class PoolRecycleOptions internal constructor() {

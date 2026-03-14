@@ -34,6 +34,8 @@ class DefaultWebViewClient(
     next: WebViewClient? = null
 ) : MiddlewareWebClientBase(next) {
 
+    private var recoveringFromError = false
+
     override fun shouldInterceptRequest(
         view: WebView,
         request: WebResourceRequest
@@ -65,10 +67,20 @@ class DefaultWebViewClient(
     }
 
     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
-        webLayout.showWebContent()
+        if (!recoveringFromError) {
+            webLayout.showWebContent()
+        }
         indicator.onPageStarted()
         eventReporter?.invoke(BitwebcEvent.PageStarted(url))
         super.onPageStarted(view, url, favicon)
+    }
+
+    override fun onPageCommitVisible(view: WebView, url: String?) {
+        if (recoveringFromError) {
+            recoveringFromError = false
+            webLayout.showWebContent()
+        }
+        super.onPageCommitVisible(view, url)
     }
 
     override fun onPageFinished(view: WebView, url: String?) {
@@ -88,11 +100,10 @@ class DefaultWebViewClient(
         request: WebResourceRequest,
         error: WebResourceError
     ) {
+        super.onReceivedError(view, request, error)
         if (request.isForMainFrame) {
-            showErrorAndRetry(view, error.description?.toString()) {
-                webLayout.showWebContent()
-                view.reload()
-            }
+            recoveringFromError = false
+            showErrorAndRetry(view, error.description?.toString())
             indicator.reset()
             eventReporter?.invoke(
                 BitwebcEvent.PageError(
@@ -101,7 +112,28 @@ class DefaultWebViewClient(
                 )
             )
         }
-        super.onReceivedError(view, request, error)
+    }
+
+    override fun onReceivedHttpError(
+        view: WebView,
+        request: WebResourceRequest,
+        errorResponse: WebResourceResponse
+    ) {
+        super.onReceivedHttpError(view, request, errorResponse)
+        if (request.isForMainFrame && errorResponse.statusCode >= 400) {
+            recoveringFromError = false
+            showErrorAndRetry(
+                view,
+                "服务器返回错误（${errorResponse.statusCode}），请稍后重试"
+            )
+            indicator.reset()
+            eventReporter?.invoke(
+                BitwebcEvent.PageError(
+                    url = request.url?.toString(),
+                    message = "HTTP ${errorResponse.statusCode}"
+                )
+            )
+        }
     }
 
     @SuppressLint("WebViewClientOnReceivedSslError")
@@ -128,7 +160,7 @@ class DefaultWebViewClient(
             nativeUiDelegate.showSslError(view, error, onDecision)
         } else {
             webLayout.showError("SSL 证书异常，已阻止继续加载") {
-                webLayout.showWebContent()
+                recoveringFromError = true
                 view.reload()
             }
             onDecision(false)
@@ -136,10 +168,7 @@ class DefaultWebViewClient(
     }
 
     override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-        showErrorAndRetry(view, "渲染进程异常退出，点击重试恢复页面") {
-            webLayout.showWebContent()
-            view.reload()
-        }
+        showErrorAndRetry(view, "渲染进程异常退出，点击重试恢复页面")
         indicator.reset()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             eventReporter?.invoke(
@@ -159,11 +188,15 @@ class DefaultWebViewClient(
         return true
     }
 
-    private fun showErrorAndRetry(view: WebView, message: String?, onRetry: () -> Unit) {
+    private fun showErrorAndRetry(view: WebView, message: String?) {
+        val retry: () -> Unit = {
+            recoveringFromError = true
+            view.reload()
+        }
         if (nativeUiDelegate != null) {
-            nativeUiDelegate.showErrorRetry(view.context, message, onRetry)
+            nativeUiDelegate.showErrorRetry(view.context, message, retry)
         } else {
-            webLayout.showError(message, onRetry)
+            webLayout.showError(message, retry)
         }
     }
 }
