@@ -1,15 +1,29 @@
-# 推送 v* 标签时自动构建库 AAR + sample 调试包，并创建 GitHub Release；也可在 Actions 页手动运行。
-# 手动运行时可在「版本号」中填写（如 0.2.0）；留空则与打标签一致，使用 gradle.properties 的 VERSION_NAME。
-name: Release
+# Release：打 v* 标签或手动运行 → AAR + 带版本号的 sample APK → GitHub Release
+# Sample：推 master/main（相关路径）或 PR → 编译 sample；非 PR 上传 Artifact（与 Release 相同版本号文件名）
+# 版本号：Release 手动运行可填 inputs.version，留空则 VERSION_NAME；Sample 始终与 gradle.properties 的 VERSION_NAME 一致（与 Release 默认同源）
+name: Release & Sample
 
 on:
   push:
     tags:
       - 'v*'
+    branches: [master, main]
+    paths:
+      - '.github/workflows/release.yml'
+      - 'sample/**'
+      - 'bitwebc-core/**'
+      - 'bitwebc-filechooser/**'
+      - 'bitwebc-download/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+  pull_request:
+    branches: [master, main]
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（如 0.2.0）；留空则使用 gradle.properties 的 VERSION_NAME'
+        description: '版本号（如 0.2.0）；留空则使用 gradle.properties 的 VERSION_NAME（仅影响 Release）'
         required: false
         default: ''
         type: string
@@ -19,6 +33,7 @@ permissions:
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -37,7 +52,6 @@ jobs:
           fi
           if [[ -z "$VERSION_NAME" ]]; then echo "::error::VERSION_NAME 未设置（请填写版本号或保证 gradle.properties 中有 VERSION_NAME）"; exit 1; fi
           if [[ "$VERSION_NAME" != v* ]]; then RELEASE_TAG="v$VERSION_NAME"; else RELEASE_TAG="$VERSION_NAME"; fi
-          # APK 文件名用无 v 前缀的版本号
           VERSION_FOR_FILE="$VERSION_NAME"
           [[ "$VERSION_FOR_FILE" == v* ]] && VERSION_FOR_FILE="${VERSION_FOR_FILE#v}"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
@@ -88,3 +102,54 @@ jobs:
             release-aars/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  sample:
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read VERSION_NAME（与 Release 资源同名）
+        id: version
+        run: |
+          VERSION_NAME=$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2)
+          if [[ -z "$VERSION_NAME" ]]; then echo "::error::gradle.properties 中缺少 VERSION_NAME"; exit 1; fi
+          VERSION_FOR_FILE="$VERSION_NAME"
+          [[ "$VERSION_FOR_FILE" == v* ]] && VERSION_FOR_FILE="${VERSION_FOR_FILE#v}"
+          echo "version=$VERSION_FOR_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build sample (debug APK)
+        run: ./gradlew :sample:assembleDebug --no-daemon --stacktrace
+
+      - name: 打包为与 Release 相同版本号文件名
+        run: |
+          mkdir -p sample-out
+          cp sample/build/outputs/apk/debug/sample-debug.apk \
+            "sample-out/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk"
+
+      - name: Upload debug APK
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitwebc-sample-${{ steps.version.outputs.version }}-debug
+          path: sample-out/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk
+          retention-days: 3
+          compression-level: 9

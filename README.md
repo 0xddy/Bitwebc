@@ -366,9 +366,9 @@ bitwebcView.setup(fragment) {
 
 仓库中的 `sample` 模块演示了上述大部分能力：自定义错误页、URL 拦截、事件收集、JSBridge、下载确认、WebMessagePort、进度条与池化等。可直接运行 sample 查看效果，并对照 `MainActivity.kt` 与布局文件做对照学习。
 
-**GitHub Actions**  
-- **Release（推荐）**：打标签 `v*`（与 `gradle.properties` 里 `VERSION_NAME` 对应）会触发 workflow「Release」，在 [Releases](https://github.com/0xddy/Bitwebc/releases) 页面可下载三个 AAR，以及 **`bitwebc-sample-<版本>-debug.apk`**（示例 App 调试包，不占 Actions Artifacts 配额）。也可在 Actions 里 **Run workflow** 手动运行；**版本号**可填（如 `0.2.0`），**留空**则与仓库内 `VERSION_NAME` 一致。  
-- **Build Sample APK**：推送 `master`/`main` 时编译 sample；需要即时 APK 时在对应运行页 **Artifacts** 下载（保留时间短，省配额）。PR 仅编译、不上传 Artifacts。
+**GitHub Actions**（工作流 **Release & Sample**）  
+- **Release**：打标签 `v*` 或 **Run workflow** 手动运行 → 上传三个 AAR + **`bitwebc-sample-<VERSION_NAME>-debug.apk`** 到 [Releases](https://github.com/0xddy/Bitwebc/releases)。手动运行时可填版本号，**留空**则用 `gradle.properties` 的 `VERSION_NAME`。  
+- **Sample**：推送 `master`/`main`（相关路径变更）时编译并上传 **同名** APK 到 Artifacts（保留约 3 天）；PR 仅编译、不上传。版本号与 `VERSION_NAME` 一致，与 Release 里 sample 包命名相同。
 
 ---
 
