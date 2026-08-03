@@ -11,6 +11,8 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.graphics.toColorInt
+import androidx.core.view.isVisible
 import cn.lmcw.bitwebc.core.api.WebLayout
 import cn.lmcw.bitwebc.core.extensions.resolveIndicatorHeightPx
 
@@ -59,6 +61,27 @@ class DefaultWebLayout : WebLayout {
         showWebContent()
     }
 
+    override fun replaceWebView(
+        activity: Activity,
+        oldWebView: WebView,
+        newWebView: WebView,
+        indicatorView: View
+    ) {
+        val wasShowingError = errorContainer.isVisible
+        rootView.removeView(oldWebView)
+        this.webView = newWebView
+        rootView.addView(
+            newWebView,
+            rootView.indexOfChild(indicatorView).coerceAtLeast(1),
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        newWebView.visibility = if (wasShowingError) View.GONE else View.VISIBLE
+        indicatorView.bringToFront()
+    }
+
     override fun showWebContent() {
         webView.visibility = View.VISIBLE
         errorContainer.visibility = View.GONE
@@ -79,7 +102,7 @@ class DefaultWebLayout : WebLayout {
 
     private fun buildErrorView(context: Context) {
         errorMessageView = TextView(context).apply {
-            setTextColor(Color.parseColor("#666666"))
+            setTextColor("#666666".toColorInt())
             textSize = 14f
             gravity = Gravity.CENTER
             text = "页面加载失败，请稍后重试"

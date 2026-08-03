@@ -1,14 +1,13 @@
 package cn.lmcw.bitwebc.core.ui
 
 import android.content.Context
-import android.graphics.Color
 import android.view.View
 import android.widget.FrameLayout
 import cn.lmcw.bitwebc.core.api.WebIndicator
 
 class DefaultWebIndicator(
     private val heightDp: Int = 2,
-    private val color: Int = Color.parseColor("#2F80ED")
+    private val color: Int = 0xFF2F80ED.toInt()
 ) : WebIndicator {
 
     private var indicatorView: CoolProgressIndicatorView? = null

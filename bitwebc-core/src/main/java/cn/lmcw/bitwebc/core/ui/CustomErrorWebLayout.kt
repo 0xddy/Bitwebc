@@ -10,13 +10,14 @@ import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.annotation.LayoutRes
+import androidx.core.view.isVisible
 import cn.lmcw.bitwebc.core.api.WebLayout
 import cn.lmcw.bitwebc.core.extensions.detachFromParent
 import cn.lmcw.bitwebc.core.extensions.resolveIndicatorHeightPx
 
 class CustomErrorWebLayout private constructor(
     private var errorView: View?,
-    @LayoutRes private val layoutRes: Int,
+    @param:LayoutRes private val layoutRes: Int,
     private val retryViewId: Int,
     private val errorMessageViewId: Int
 ) : WebLayout {
@@ -76,6 +77,27 @@ class CustomErrorWebLayout private constructor(
         )
         indicatorView.bringToFront()
         showWebContent()
+    }
+
+    override fun replaceWebView(
+        activity: Activity,
+        oldWebView: WebView,
+        newWebView: WebView,
+        indicatorView: View
+    ) {
+        val wasShowingError = resolvedErrorView.isVisible
+        rootView.removeView(oldWebView)
+        this.webView = newWebView
+        rootView.addView(
+            newWebView,
+            rootView.indexOfChild(indicatorView).coerceAtLeast(1),
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        newWebView.visibility = if (wasShowingError) View.GONE else View.VISIBLE
+        indicatorView.bringToFront()
     }
 
     override fun showWebContent() {

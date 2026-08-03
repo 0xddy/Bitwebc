@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.net.http.SslError
 import android.os.Build
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
@@ -19,66 +20,89 @@ import cn.lmcw.bitwebc.core.api.ErrorPolicy
 import cn.lmcw.bitwebc.core.api.WebIndicator
 import cn.lmcw.bitwebc.core.api.WebLayout
 import cn.lmcw.bitwebc.core.api.WebResourceInterceptor
-import cn.lmcw.bitwebc.core.api.WebUIProvider
 import cn.lmcw.bitwebc.core.bridge.BitwebcWebMessagePort
+import cn.lmcw.bitwebc.core.bridge.WebOrigin
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 import cn.lmcw.bitwebc.core.route.BitwebcSchemeRouter
 
-class DefaultWebViewClient(
+internal class DefaultWebViewClient(
     private val webLayout: WebLayout,
     private val indicator: WebIndicator,
-    private val schemeRouter: BitwebcSchemeRouter = BitwebcSchemeRouter(),
-    private val nativeUiDelegate: WebUIProvider? = null,
-    private val sslErrorPolicy: ((android.net.Uri, SslError) -> Boolean)? = null,
-    private val messagePortSetup: ((WebView, WebMessagePortCompat, WebMessagePortCompat) -> Unit)? = null,
-    private val eventReporter: ((BitwebcEvent) -> Unit)? = null,
-    private val resourceInterceptors: List<WebResourceInterceptor> = emptyList(),
-    private val errorPolicy: ErrorPolicy = ErrorPolicies.standard,
-    next: WebViewClient? = null
+    private val schemeRouter: BitwebcSchemeRouter,
+    private val sslErrorPolicy: ((android.net.Uri, SslError) -> Boolean)?,
+    private val messagePortSetup: ((WebView, WebMessagePortCompat, WebMessagePortCompat) -> Unit)?,
+    private val eventReporter: ((BitwebcEvent) -> Unit)?,
+    private val resourceInterceptors: List<WebResourceInterceptor>,
+    private val errorPolicy: ErrorPolicy,
+    private val rendererRecovery: ((failedView: WebView, lastMainFrameUrl: String?) -> WebView?)?,
+    private val rendererRetry: ((replacement: WebView) -> Unit)?,
+    private val fallbackMainFrameUrl: () -> String?,
+    next: WebViewClient?,
+    private val messagePortAllowedOrigins: Set<String>,
+    private val rendererQuarantine: ((failedView: WebView) -> Unit)?,
+    private val rendererRecoveryFailed: ((failedView: WebView) -> Unit)?
 ) : MiddlewareWebClientBase(next) {
+
+    internal var visitedHistoryListener: ((WebView, String?) -> Unit)? = null
+    internal var mainFrameNavigationListener: (
+        (WebView, String?, allowRedirect: Boolean) -> Unit
+    )? = null
 
     private var recoveringFromError = false
     private val errorUrls = mutableSetOf<String>()
     private val pendingUrls = mutableSetOf<String>()
+    private var lastMainFrameUrl: String? = null
 
     override fun shouldInterceptRequest(
         view: WebView,
         request: WebResourceRequest
     ): WebResourceResponse? {
-        if (resourceInterceptors.isEmpty()) {
-            return super.shouldInterceptRequest(view, request)
-        }
+        if (resourceInterceptors.isEmpty()) return super.shouldInterceptRequest(view, request)
         val terminal: (WebResourceRequest) -> WebResourceResponse? = { req ->
             nextClient()?.shouldInterceptRequest(view, req)
         }
-        val chain = RealInterceptorChain(resourceInterceptors, 0, view, request, terminal)
-        return chain.proceed(request)
+        return RealInterceptorChain(resourceInterceptors, 0, view, request, terminal).proceed(request)
     }
 
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
         val uri = request.url ?: return super.shouldOverrideUrlLoading(view, request)
-        if (schemeRouter.handle(view, uri)) return true
+        if (nextClient()?.shouldOverrideUrlLoading(view, request) == true) return true
         val scheme = uri.scheme?.lowercase()
-        if (scheme == "http" || scheme == "https" || scheme == "about") {
-            return super.shouldOverrideUrlLoading(view, request)
-        }
-        eventReporter?.invoke(
-            BitwebcEvent.SchemeFallback(
-                rawUrl = uri.toString(),
-                reason = "外部Scheme未被处理，已降级忽略"
+        val isExternalScheme = scheme != null && scheme !in setOf("http", "https", "about")
+        if (isExternalScheme && (!request.isForMainFrame || !request.hasGesture())) {
+            reportEvent(
+                BitwebcEvent.SchemeFallback(
+                    rawUrl = uri.toString(),
+                    reason = "External schemes require a user gesture in the main frame"
+                )
             )
-        )
-        return super.shouldOverrideUrlLoading(view, request)
+            return true
+        }
+        return when (schemeRouter.route(view, uri)) {
+            BitwebcSchemeRouter.Result.PASS_THROUGH -> false
+            BitwebcSchemeRouter.Result.HANDLED -> true
+            BitwebcSchemeRouter.Result.CONSUMED -> {
+                reportEvent(
+                    BitwebcEvent.SchemeFallback(
+                        rawUrl = uri.toString(),
+                        reason = "No activity could handle this external scheme"
+                    )
+                )
+                true
+            }
+        }
     }
 
     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
-        url?.let { pendingUrls += it }
-        if (!recoveringFromError) {
-            webLayout.showWebContent()
+        if (!url.isNullOrBlank()) {
+            lastMainFrameUrl = url
+            pendingUrls += url
         }
+        runCatching { mainFrameNavigationListener?.invoke(view, url, true) }
+        if (!recoveringFromError) webLayout.showWebContent()
         indicator.onPageStarted()
-        eventReporter?.invoke(BitwebcEvent.PageStarted(url))
         super.onPageStarted(view, url, favicon)
+        reportEvent(BitwebcEvent.PageStarted(url))
     }
 
     override fun onPageCommitVisible(view: WebView, url: String?) {
@@ -86,23 +110,26 @@ class DefaultWebViewClient(
     }
 
     override fun onPageFinished(view: WebView, url: String?) {
+        if (!url.isNullOrBlank()) lastMainFrameUrl = url
+        runCatching { mainFrameNavigationListener?.invoke(view, url, false) }
         indicator.onPageFinished()
         CookieManager.getInstance().flush()
-        if (url != null && !errorUrls.contains(url) && pendingUrls.contains(url)) {
-            if (recoveringFromError) {
-                recoveringFromError = false
-                webLayout.showWebContent()
-            }
+        if (url != null && url !in errorUrls && url in pendingUrls && recoveringFromError) {
+            recoveringFromError = false
+            webLayout.showWebContent()
         }
-        pendingUrls -= url.orEmpty()
+        if (url != null) pendingUrls -= url
         errorUrls.clear()
-        eventReporter?.invoke(BitwebcEvent.PageFinished(url))
-        messagePortSetup?.let { setup ->
+        val pageOrigin = WebOrigin.fromUrl(url)
+        messagePortSetup?.takeIf {
+            pageOrigin != null && pageOrigin in messagePortAllowedOrigins
+        }?.let { setup ->
             BitwebcWebMessagePort.setupOnPageFinished(view, url) { receivePort, sendToJsPort ->
                 setup(view, receivePort, sendToJsPort)
             }
         }
         super.onPageFinished(view, url)
+        reportEvent(BitwebcEvent.PageFinished(url))
     }
 
     override fun onReceivedError(
@@ -111,19 +138,14 @@ class DefaultWebViewClient(
         error: WebResourceError
     ) {
         super.onReceivedError(view, request, error)
-        val ctx = ErrorContext.Network(view, request, error)
-        if (errorPolicy.shouldShowError(ctx)) {
+        val context = ErrorContext.Network(view, request, error)
+        if (runCatching { errorPolicy.shouldShowError(context) }.getOrDefault(false)) {
             val failingUrl = request.url?.toString()
             failingUrl?.let { errorUrls += it }
             recoveringFromError = false
             showErrorAndRetry(view, error.description?.toString())
             indicator.reset()
-            eventReporter?.invoke(
-                BitwebcEvent.PageError(
-                    url = failingUrl,
-                    message = error.description?.toString()
-                )
-            )
+            reportEvent(BitwebcEvent.PageError(failingUrl, error.description?.toString()))
         }
     }
 
@@ -134,88 +156,121 @@ class DefaultWebViewClient(
     ) {
         super.onReceivedHttpError(view, request, errorResponse)
         val requestUrl = request.url?.toString()
-        eventReporter?.invoke(
-            BitwebcEvent.HttpError(url = requestUrl, statusCode = errorResponse.statusCode)
-        )
-        val ctx = ErrorContext.Http(view, request, errorResponse)
-        if (errorPolicy.shouldShowError(ctx)) {
+        val context = ErrorContext.Http(view, request, errorResponse)
+        var pageErrorMessage: String? = null
+        if (runCatching { errorPolicy.shouldShowError(context) }.getOrDefault(false)) {
             requestUrl?.let { errorUrls += it }
             recoveringFromError = false
-            showErrorAndRetry(
-                view,
-                "服务器返回错误（${errorResponse.statusCode}），请稍后重试"
-            )
-            indicator.reset()
-            eventReporter?.invoke(
-                BitwebcEvent.PageError(
-                    url = requestUrl,
-                    message = "HTTP ${errorResponse.statusCode}"
-                )
-            )
+            runCatching {
+                showErrorAndRetry(view, "Server returned HTTP ${errorResponse.statusCode}. Tap retry.")
+            }
+            runCatching { indicator.reset() }
+            pageErrorMessage = "HTTP ${errorResponse.statusCode}"
         }
+        reportEvent(BitwebcEvent.HttpError(requestUrl, errorResponse.statusCode))
+        pageErrorMessage?.let { reportEvent(BitwebcEvent.PageError(requestUrl, it)) }
     }
 
     @SuppressLint("WebViewClientOnReceivedSslError")
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-        val onDecision = { proceed: Boolean ->
-            eventReporter?.invoke(
-                BitwebcEvent.SslError(url = view.url, message = error.toString())
-            )
+        var decisionMade = false
+        val onDecision = decision@{ proceed: Boolean ->
+            if (decisionMade) return@decision
+            decisionMade = true
+            val failingUrl = runCatching { view.url }.getOrNull()
             if (proceed) {
-                handler.proceed()
+                runCatching { handler.proceed() }
             } else {
-                indicator.reset()
-                handler.cancel()
+                runCatching { indicator.reset() }
+                runCatching { handler.cancel() }
             }
+            val message = error.toString()
+            reportEvent(BitwebcEvent.SslError(failingUrl, message))
+            if (!proceed) reportEvent(BitwebcEvent.PageError(failingUrl, message))
         }
 
         val errorUrl = (error.url ?: view.url.orEmpty()).toUri()
-        if (sslErrorPolicy != null && sslErrorPolicy.invoke(errorUrl, error)) {
+        val policy = sslErrorPolicy
+        if (policy != null && runCatching { policy.invoke(errorUrl, error) }.getOrDefault(false)) {
             onDecision(true)
             return
         }
-
-        if (nativeUiDelegate != null) {
-            nativeUiDelegate.showSslError(view, error, onDecision)
-        } else {
-            webLayout.showError("SSL 证书异常，已阻止继续加载") {
+        runCatching {
+            webLayout.showError("SSL certificate validation failed. Loading was blocked.") {
                 recoveringFromError = true
                 view.reload()
             }
-            onDecision(false)
         }
+        onDecision(false)
+    }
+
+    override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+        if (!url.isNullOrBlank()) lastMainFrameUrl = url
+        runCatching { mainFrameNavigationListener?.invoke(view, url, false) }
+        visitedHistoryListener?.invoke(view, url)
+        super.doUpdateVisitedHistory(view, url, isReload)
     }
 
     override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-        showErrorAndRetry(view, "渲染进程异常退出，点击重试恢复页面")
-        indicator.reset()
+        runCatching { rendererQuarantine?.invoke(view) }
+        runCatching { indicator.reset() }
+
+        // Navigation callbacks are not guaranteed to arrive before a renderer exits. This is
+        // especially common immediately after restoreState(), so retain the stable Session state
+        // as a fallback instead of turning a valid page into about:blank on retry.
+        val retryUrl = lastMainFrameUrl
+            ?: runCatching(fallbackMainFrameUrl).getOrNull()?.takeIf(String::isNotBlank)
+        val replacement = runCatching { rendererRecovery?.invoke(view, retryUrl) }.getOrNull()
+        recoveringFromError = false
+        pendingUrls.clear()
+        errorUrls.clear()
+        if (replacement != null) {
+            runCatching {
+                showErrorAndRetry(
+                    replacement,
+                    "The WebView renderer exited. Tap retry to restore the page."
+                ) {
+                    recoveringFromError = true
+                    val retry = rendererRetry
+                    if (retry != null) {
+                        retry(replacement)
+                    } else {
+                        replacement.loadUrl(retryUrl ?: "about:blank")
+                    }
+                }
+            }
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            eventReporter?.invoke(
-                BitwebcEvent.RenderProcessGone(
-                    didCrash = detail.didCrash(),
-                    priorityAtExit = detail.rendererPriorityAtExit()
-                )
+            reportEvent(
+                BitwebcEvent.RenderProcessGone(detail.didCrash(), detail.rendererPriorityAtExit())
             )
         } else {
-            eventReporter?.invoke(
-                BitwebcEvent.RenderProcessGone(
-                    didCrash = true,
-                    priorityAtExit = 0
-                )
-            )
+            reportEvent(BitwebcEvent.RenderProcessGone(didCrash = true, priorityAtExit = 0))
+        }
+        if (replacement == null) {
+            val ownerCleanup = rendererRecoveryFailed
+            if (ownerCleanup != null) {
+                runCatching { ownerCleanup.invoke(view) }
+            } else {
+                runCatching { (view.parent as? ViewGroup)?.removeView(view) }
+                runCatching { view.destroy() }
+            }
         }
         return true
     }
 
-    private fun showErrorAndRetry(view: WebView, message: String?) {
-        val retry: () -> Unit = {
+    private fun showErrorAndRetry(
+        view: WebView,
+        message: String?,
+        retry: () -> Unit = {
             recoveringFromError = true
             view.reload()
         }
-        if (nativeUiDelegate != null) {
-            nativeUiDelegate.showErrorRetry(view.context, message, retry)
-        } else {
-            webLayout.showError(message, retry)
-        }
+    ) {
+        webLayout.showError(message, retry)
+    }
+
+    private fun reportEvent(event: BitwebcEvent) {
+        runCatching { eventReporter?.invoke(event) }
     }
 }

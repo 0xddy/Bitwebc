@@ -1,155 +1,227 @@
-# Release：打 v* 标签或手动运行 → AAR + 带版本号的 sample APK → GitHub Release
-# Sample：推 master/main（相关路径）或 PR → 编译 sample；非 PR 上传 Artifact（与 Release 相同版本号文件名）
-# 版本号：Release 手动运行可填 inputs.version，留空则 VERSION_NAME；Sample 始终与 gradle.properties 的 VERSION_NAME 一致（与 Release 默认同源）
-name: Release & Sample
+name: Build, Test, and Release
 
 on:
   push:
     tags:
-      - 'v*'
-    branches: [master, main]
+      - "v*"
+    branches:
+      - master
+      - main
     paths:
-      - '.github/workflows/release.yml'
-      - 'sample/**'
-      - 'bitwebc-core/**'
-      - 'bitwebc-filechooser/**'
-      - 'bitwebc-download/**'
-      - 'gradle/**'
-      - '*.gradle.kts'
-      - 'settings.gradle.kts'
-      - 'gradle.properties'
+      - ".github/workflows/release.yml"
+      - "sample/**"
+      - "bitwebc-core/**"
+      - "bitwebc-filechooser/**"
+      - "bitwebc-download/**"
+      - "bitwebc-compose/**"
+      - "gradle/**"
+      - "*.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
+      - "jitpack.yml"
   pull_request:
-    branches: [master, main]
+    branches:
+      - master
+      - main
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（如 0.2.0）；留空则使用 gradle.properties 的 VERSION_NAME（仅影响 Release）'
+        description: "Release version (for example 0.2.0); blank uses VERSION_NAME"
         required: false
-        default: ''
+        default: ""
         type: string
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.version || 'VERSION_NAME') || github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+  quality:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Read VERSION_NAME and set release tag
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 37 SDK
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "emulator"
+
+      - name: Verify tests, lint, and debug builds
+        run: |
+          chmod +x gradlew
+          ./gradlew \
+            test lintDebug assembleDebug :sample:assembleRelease \
+            :bitwebc-core:publishReleasePublicationToMavenLocal \
+            :bitwebc-filechooser:publishReleasePublicationToMavenLocal \
+            :bitwebc-download:publishReleasePublicationToMavenLocal \
+            :bitwebc-compose:publishReleasePublicationToMavenLocal \
+            --no-daemon --stacktrace
+
+      - name: Enable KVM for the managed test device
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run Android managed-device smoke test
+        run: |
+          ./gradlew \
+            :bitwebc-compose:pixel2Api35DebugAndroidTest \
+            :bitwebc-filechooser:pixel2Api35DebugAndroidTest \
+            :sample:pixel2Api35DebugAndroidTest \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect \
+            --no-daemon --stacktrace
+
+      - name: Prepare versioned sample APK
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+        id: sample-version
+        shell: bash
+        run: |
+          version="$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2-)"
+          version="${version#v}"
+          if [[ -z "$version" ]]; then
+            echo "::error::VERSION_NAME is missing from gradle.properties"
+            exit 1
+          fi
+          mkdir -p sample-out
+          cp sample/build/outputs/apk/debug/sample-debug.apk \
+            "sample-out/bitwebc-sample-$version-debug.apk"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload versioned sample APK
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitwebc-sample-${{ steps.sample-version.outputs.version }}-debug
+          path: sample-out/bitwebc-sample-${{ steps.sample-version.outputs.version }}-debug.apk
+          retention-days: 3
+          compression-level: 9
+
+  release:
+    needs: quality
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version
         id: version
         env:
           MANUAL_VERSION: ${{ github.event.inputs.version || '' }}
+        shell: bash
         run: |
-          MANUAL_TRIMMED=$(echo "$MANUAL_VERSION" | tr -d '[:space:]')
-          if [[ -n "$MANUAL_TRIMMED" ]]; then
-            VERSION_NAME="$MANUAL_TRIMMED"
+          manual_version="$(echo "$MANUAL_VERSION" | tr -d '[:space:]')"
+          if [[ -n "$manual_version" ]]; then
+            version="$manual_version"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="$GITHUB_REF_NAME"
           else
-            VERSION_NAME=$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2)
+            version="$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2-)"
           fi
-          if [[ -z "$VERSION_NAME" ]]; then echo "::error::VERSION_NAME 未设置（请填写版本号或保证 gradle.properties 中有 VERSION_NAME）"; exit 1; fi
-          if [[ "$VERSION_NAME" != v* ]]; then RELEASE_TAG="v$VERSION_NAME"; else RELEASE_TAG="$VERSION_NAME"; fi
-          VERSION_FOR_FILE="$VERSION_NAME"
-          [[ "$VERSION_FOR_FILE" == v* ]] && VERSION_FOR_FILE="${VERSION_FOR_FILE#v}"
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION_FOR_FILE" >> "$GITHUB_OUTPUT"
-          echo "Release tag: $RELEASE_TAG (version label: $VERSION_FOR_FILE)"
+          version="${version#v}"
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "::error::Invalid or missing release version: $version"
+            exit 1
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify an existing release tag matches this commit
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          if git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG^{commit}" >/dev/null; then
+            tag_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $RELEASE_TAG points to $tag_commit, not current commit $GITHUB_SHA"
+              exit 1
+            fi
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
           cache: gradle
 
-      - name: Setup Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-36 build-tools;36.0.0'
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - name: Install Android 37 SDK
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
 
-      - name: Build library AARs and sample APK
+      - name: Build release assets
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ./gradlew :bitwebc-core:assembleRelease \
+          chmod +x gradlew
+          ./gradlew \
+            :bitwebc-core:assembleRelease \
             :bitwebc-filechooser:assembleRelease \
             :bitwebc-download:assembleRelease \
+            :bitwebc-compose:assembleRelease \
             :sample:assembleDebug \
-            --no-daemon
+            :sample:assembleRelease \
+            -PVERSION_NAME="$RELEASE_VERSION" \
+            --no-daemon --stacktrace
 
       - name: Collect release assets
         run: |
-          mkdir -p release-aars
-          cp bitwebc-core/build/outputs/aar/bitwebc-core-release.aar release-aars/
-          cp bitwebc-filechooser/build/outputs/aar/bitwebc-filechooser-release.aar release-aars/
-          cp bitwebc-download/build/outputs/aar/bitwebc-download-release.aar release-aars/
+          mkdir -p release-assets
+          cp bitwebc-core/build/outputs/aar/bitwebc-core-release.aar release-assets/
+          cp bitwebc-filechooser/build/outputs/aar/bitwebc-filechooser-release.aar release-assets/
+          cp bitwebc-download/build/outputs/aar/bitwebc-download-release.aar release-assets/
+          cp bitwebc-compose/build/outputs/aar/bitwebc-compose-release.aar release-assets/
           cp sample/build/outputs/apk/debug/sample-debug.apk \
-            "release-aars/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk"
+            "release-assets/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk"
 
-      - name: Create GitHub Release and upload assets
+      - name: Atomically create or re-verify the release tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git fetch --force origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          else
+            git tag --force "$RELEASE_TAG" "$GITHUB_SHA"
+            if ! git push origin "refs/tags/$RELEASE_TAG"; then
+              git fetch --force origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            fi
+          fi
+          tag_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+          if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag $RELEASE_TAG points to $tag_commit, not current commit $GITHUB_SHA"
+            exit 1
+          fi
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           files: |
-            release-aars/bitwebc-core-release.aar
-            release-aars/bitwebc-filechooser-release.aar
-            release-aars/bitwebc-download-release.aar
-            release-aars/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  sample:
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'))
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Read VERSION_NAME（与 Release 资源同名）
-        id: version
-        run: |
-          VERSION_NAME=$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2)
-          if [[ -z "$VERSION_NAME" ]]; then echo "::error::gradle.properties 中缺少 VERSION_NAME"; exit 1; fi
-          VERSION_FOR_FILE="$VERSION_NAME"
-          [[ "$VERSION_FOR_FILE" == v* ]] && VERSION_FOR_FILE="${VERSION_FOR_FILE#v}"
-          echo "version=$VERSION_FOR_FILE" >> "$GITHUB_OUTPUT"
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-36 build-tools;36.0.0'
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Build sample (debug APK)
-        run: ./gradlew :sample:assembleDebug --no-daemon --stacktrace
-
-      - name: 打包为与 Release 相同版本号文件名
-        run: |
-          mkdir -p sample-out
-          cp sample/build/outputs/apk/debug/sample-debug.apk \
-            "sample-out/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk"
-
-      - name: Upload debug APK
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: bitwebc-sample-${{ steps.version.outputs.version }}-debug
-          path: sample-out/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk
-          retention-days: 3
-          compression-level: 9
+            release-assets/bitwebc-core-release.aar
+            release-assets/bitwebc-filechooser-release.aar
+            release-assets/bitwebc-download-release.aar
+            release-assets/bitwebc-compose-release.aar
+            release-assets/bitwebc-sample-${{ steps.version.outputs.version }}-debug.apk

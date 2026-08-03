@@ -26,13 +26,10 @@ android {
 dependencies {
     api(libs.androidx.lifecycle.runtime.ktx)
     api(libs.androidx.core.ktx)
-
-    implementation(libs.androidx.activity.ktx)
-    implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.fragment.ktx)
-    implementation(libs.androidx.webkit)
-    implementation(libs.material)
-    implementation(libs.kotlinx.coroutines.android)
+    api(libs.androidx.activity.ktx)
+    api(libs.androidx.fragment.ktx)
+    api(libs.androidx.webkit)
+    api(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)
 }

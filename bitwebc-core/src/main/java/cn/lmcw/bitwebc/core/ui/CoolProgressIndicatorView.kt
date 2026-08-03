@@ -81,11 +81,15 @@ class CoolProgressIndicatorView @JvmOverloads constructor(
             }
             if (endAction != null) {
                 addListener(object : android.animation.Animator.AnimatorListener {
+                    private var cancelled = false
+
                     override fun onAnimationStart(animation: android.animation.Animator) = Unit
                     override fun onAnimationRepeat(animation: android.animation.Animator) = Unit
-                    override fun onAnimationCancel(animation: android.animation.Animator) = Unit
+                    override fun onAnimationCancel(animation: android.animation.Animator) {
+                        cancelled = true
+                    }
                     override fun onAnimationEnd(animation: android.animation.Animator) {
-                        endAction.invoke()
+                        if (!cancelled) endAction.invoke()
                     }
                 })
             }
@@ -103,11 +107,15 @@ class CoolProgressIndicatorView @JvmOverloads constructor(
                     alpha = animator.animatedValue as Float
                 }
                 addListener(object : android.animation.Animator.AnimatorListener {
+                    private var cancelled = false
+
                     override fun onAnimationStart(animation: android.animation.Animator) = Unit
                     override fun onAnimationRepeat(animation: android.animation.Animator) = Unit
-                    override fun onAnimationCancel(animation: android.animation.Animator) = Unit
+                    override fun onAnimationCancel(animation: android.animation.Animator) {
+                        cancelled = true
+                    }
                     override fun onAnimationEnd(animation: android.animation.Animator) {
-                        reset()
+                        if (!cancelled) reset()
                     }
                 })
                 startDelay = 120L
@@ -214,4 +222,3 @@ class CoolProgressIndicatorView @JvmOverloads constructor(
         return Color.argb(a, Color.red(color), Color.green(color), Color.blue(color))
     }
 }
-

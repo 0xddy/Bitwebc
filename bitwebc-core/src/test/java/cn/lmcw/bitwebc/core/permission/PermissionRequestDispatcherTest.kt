@@ -1,6 +1,7 @@
 package cn.lmcw.bitwebc.core.permission
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -48,6 +49,94 @@ class PermissionRequestDispatcherTest {
         assertEquals(2, callbackResults.size)
         assertEquals(mapOf("camera" to true, "audio" to false), callbackResults[0])
         assertEquals(mapOf("location" to true), callbackResults[1])
+    }
+
+    @Test
+    fun `single and multiple permission requests should share one launch queue`() {
+        val launched = mutableListOf<String>()
+        val dispatcher = PermissionRequestDispatcher(
+            launchSinglePermission = { launched += "single:$it" },
+            launchMultiplePermissions = { launched += "multiple:${it.joinToString()}" }
+        )
+
+        dispatcher.enqueueSingle("location") {}
+        dispatcher.enqueueMultiple(arrayOf("camera", "audio")) {}
+        dispatcher.enqueueSingle("notifications") {}
+
+        assertEquals(listOf("single:location"), launched)
+
+        dispatcher.onSinglePermissionResult(true)
+        assertEquals(listOf("single:location", "multiple:camera, audio"), launched)
+
+        dispatcher.onMultiplePermissionsResult(mapOf("camera" to true, "audio" to true))
+        assertEquals(
+            listOf("single:location", "multiple:camera, audio", "single:notifications"),
+            launched
+        )
+    }
+
+    @Test
+    fun `canceling active request should wait for stale result before launching next`() {
+        val launched = mutableListOf<String>()
+        val firstResults = mutableListOf<Boolean>()
+        val secondResults = mutableListOf<Map<String, Boolean>>()
+        val dispatcher = PermissionRequestDispatcher(
+            launchSinglePermission = { launched += "single:$it" },
+            launchMultiplePermissions = { launched += "multiple:${it.joinToString()}" }
+        )
+
+        val cancellation = dispatcher.enqueueSingle("location") { firstResults += it }
+        dispatcher.enqueueMultiple(arrayOf("camera")) { secondResults += it }
+        cancellation.cancel()
+
+        assertEquals(listOf(false), firstResults)
+        assertEquals(listOf("single:location"), launched)
+
+        dispatcher.onSinglePermissionResult(true)
+        assertEquals(listOf(false), firstResults)
+        assertEquals(listOf("single:location", "multiple:camera"), launched)
+
+        dispatcher.onMultiplePermissionsResult(mapOf("camera" to true))
+        assertEquals(listOf(mapOf("camera" to true)), secondResults)
+    }
+
+    @Test
+    fun `canceling queued request should deny it without launching it`() {
+        val launched = mutableListOf<String>()
+        var queuedResult = true
+        val dispatcher = PermissionRequestDispatcher(
+            launchSinglePermission = { launched += "single:$it" },
+            launchMultiplePermissions = { launched += "multiple:${it.joinToString()}" }
+        )
+
+        dispatcher.enqueueSingle("location") {}
+        val queuedCancellation = dispatcher.enqueueMultiple(arrayOf("camera")) {
+            queuedResult = it["camera"] == true
+        }
+        queuedCancellation.cancel()
+        dispatcher.onSinglePermissionResult(true)
+
+        assertFalse(queuedResult)
+        assertEquals(listOf("single:location"), launched)
+    }
+
+    @Test
+    fun `launcher failure should deny request and leave dispatcher usable`() {
+        val results = mutableListOf<Boolean>()
+        var shouldFail = true
+        val dispatcher = PermissionRequestDispatcher(
+            launchSinglePermission = {
+                if (shouldFail) throw IllegalStateException("launcher unavailable")
+            },
+            launchMultiplePermissions = { error("should not launch multiple permissions") }
+        )
+
+        dispatcher.enqueueSingle("first") { results += it }
+        shouldFail = false
+        dispatcher.enqueueSingle("second") { results += it }
+        dispatcher.onSinglePermissionResult(true)
+
+        assertEquals(listOf(false, true), results)
     }
 
     @Test

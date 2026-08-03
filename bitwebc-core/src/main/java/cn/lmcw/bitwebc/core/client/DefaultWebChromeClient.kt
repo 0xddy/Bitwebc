@@ -15,13 +15,13 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import cn.lmcw.bitwebc.core.api.WebIndicator
-import cn.lmcw.bitwebc.core.api.WebUIProvider
+import cn.lmcw.bitwebc.core.api.WebDialogProvider
 import cn.lmcw.bitwebc.core.event.BitwebcEvent
 
-class DefaultWebChromeClient(
+internal class DefaultWebChromeClient(
     private val activity: ComponentActivity,
     private val indicator: WebIndicator,
-    private val nativeUiDelegate: WebUIProvider? = null,
+    private val dialogProvider: WebDialogProvider? = null,
     private val eventReporter: ((BitwebcEvent) -> Unit)? = null,
     next: WebChromeClient? = null
 ) : MiddlewareWebChromeBase(next) {
@@ -30,11 +30,13 @@ class DefaultWebChromeClient(
     private var customView: View? = null
     private var customViewCallback: CustomViewCallback? = null
     private var fullScreenBackCallback: OnBackPressedCallback? = null
-    /** ?????????????????????????????? */
+    private var activeJsDialog: AlertDialog? = null
+    private var cancelActiveJsResult: (() -> Unit)? = null
+    /** 进入全屏前系统栏是否可见。 */
     private var systemBarsVisibleBeforeFullscreen: Boolean = true
-    /** ???????????????? */
+    /** 进入全屏前的屏幕方向。 */
     private var requestedOrientationBeforeFullscreen: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-    /** ???????????? FLAG_KEEP_SCREEN_ON?????????? */
+    /** FLAG_KEEP_SCREEN_ON 是否由本类添加。 */
     private var keepScreenOnAddedByUs: Boolean = false
 
     override fun onProgressChanged(view: WebView, newProgress: Int) {
@@ -48,14 +50,19 @@ class DefaultWebChromeClient(
         message: String?,
         result: android.webkit.JsResult
     ): Boolean {
-        if (nativeUiDelegate != null) {
-            nativeUiDelegate.showJsAlert(view, url, message, result)
+        if (dialogProvider != null) {
+            dialogProvider.showAlert(view, url, message, result)
         } else {
-            AlertDialog.Builder(view.context)
+            dismissActiveJsDialog()
+            lateinit var dialog: AlertDialog
+            dialog = AlertDialog.Builder(view.context)
                 .setMessage(message ?: "")
-                .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
-                .setOnCancelListener { result.cancel() }
-                .show()
+                .setPositiveButton(android.R.string.ok) { _, _ ->
+                    completeJsDialog(dialog) { result.confirm() }
+                }
+                .setOnCancelListener { completeJsDialog(dialog) { result.cancel() } }
+                .create()
+            showTrackedJsDialog(dialog) { result.cancel() }
         }
         return true
     }
@@ -66,15 +73,22 @@ class DefaultWebChromeClient(
         message: String?,
         result: android.webkit.JsResult
     ): Boolean {
-        if (nativeUiDelegate != null) {
-            nativeUiDelegate.showJsConfirm(view, url, message, result)
+        if (dialogProvider != null) {
+            dialogProvider.showConfirm(view, url, message, result)
         } else {
-            AlertDialog.Builder(view.context)
+            dismissActiveJsDialog()
+            lateinit var dialog: AlertDialog
+            dialog = AlertDialog.Builder(view.context)
                 .setMessage(message ?: "")
-                .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
-                .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
-                .setOnCancelListener { result.cancel() }
-                .show()
+                .setPositiveButton(android.R.string.ok) { _, _ ->
+                    completeJsDialog(dialog) { result.confirm() }
+                }
+                .setNegativeButton(android.R.string.cancel) { _, _ ->
+                    completeJsDialog(dialog) { result.cancel() }
+                }
+                .setOnCancelListener { completeJsDialog(dialog) { result.cancel() } }
+                .create()
+            showTrackedJsDialog(dialog) { result.cancel() }
         }
         return true
     }
@@ -86,22 +100,29 @@ class DefaultWebChromeClient(
         defaultValue: String?,
         result: android.webkit.JsPromptResult
     ): Boolean {
-        if (nativeUiDelegate != null) {
-            nativeUiDelegate.showJsPrompt(view, url, message, defaultValue, result)
+        if (dialogProvider != null) {
+            dialogProvider.showPrompt(view, url, message, defaultValue, result)
         } else {
+            dismissActiveJsDialog()
             val editText = android.widget.EditText(view.context).apply {
                 setText(defaultValue ?: "")
                 setPadding(48, 32, 48, 32)
             }
-            AlertDialog.Builder(view.context)
+            lateinit var dialog: AlertDialog
+            dialog = AlertDialog.Builder(view.context)
                 .setMessage(message ?: "")
                 .setView(editText)
                 .setPositiveButton(android.R.string.ok) { _, _ ->
-                    result.confirm(editText.text?.toString().orEmpty())
+                    completeJsDialog(dialog) {
+                        result.confirm(editText.text?.toString().orEmpty())
+                    }
                 }
-                .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
-                .setOnCancelListener { result.cancel() }
-                .show()
+                .setNegativeButton(android.R.string.cancel) { _, _ ->
+                    completeJsDialog(dialog) { result.cancel() }
+                }
+                .setOnCancelListener { completeJsDialog(dialog) { result.cancel() } }
+                .create()
+            showTrackedJsDialog(dialog) { result.cancel() }
         }
         return true
     }
@@ -112,80 +133,142 @@ class DefaultWebChromeClient(
             return
         }
         if (customView != null) {
-            // ?????????????????????????            callback.onCustomViewHidden()
+            runCatching { callback.onCustomViewHidden() }
             return
         }
 
-        requestedOrientationBeforeFullscreen = activity.requestedOrientation
-        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        customView = view
+        customViewCallback = callback
+        try {
+            requestedOrientationBeforeFullscreen = activity.requestedOrientation
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 
-        keepScreenOnAddedByUs = true
-        activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            val alreadyKeepingScreenOn =
+                activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
+            keepScreenOnAddedByUs = !alreadyKeepingScreenOn
+            if (keepScreenOnAddedByUs) {
+                activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
 
-        val decor = activity.findViewById<ViewGroup>(Window.ID_ANDROID_CONTENT)
-        val container = FrameLayout(activity).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-            setBackgroundColor(android.graphics.Color.BLACK)
-            isFocusable = true
-            addView(
-                view,
-                FrameLayout.LayoutParams(
+            val decor = activity.findViewById<ViewGroup>(Window.ID_ANDROID_CONTENT)
+            val container = FrameLayout(activity).apply {
+                layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
-            )
+                setBackgroundColor(android.graphics.Color.BLACK)
+                isFocusable = true
+                addView(
+                    view,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+            }
+            fullScreenContainer = container
+            decor.addView(container)
+            container.requestFocus()
+
+            val insets = ViewCompat.getRootWindowInsets(decor)
+                ?.getInsets(WindowInsetsCompat.Type.systemBars())
+            systemBarsVisibleBeforeFullscreen =
+                (insets?.top ?: 0) > 0 || (insets?.bottom ?: 0) > 0
+            WindowInsetsControllerCompat(activity.window, decor)
+                .hide(WindowInsetsCompat.Type.systemBars())
+            registerFullScreenBackPress()
+            runCatching { eventReporter?.invoke(BitwebcEvent.FullscreenChanged(fullscreen = true)) }
+        } catch (_: Exception) {
+            onHideCustomView()
         }
-        decor.addView(container)
-        container.requestFocus()
-
-        customView = view
-        customViewCallback = callback
-        fullScreenContainer = container
-
-        val insets = ViewCompat.getRootWindowInsets(decor)?.getInsets(WindowInsetsCompat.Type.systemBars())
-        systemBarsVisibleBeforeFullscreen = (insets?.top ?: 0) > 0 || (insets?.bottom ?: 0) > 0
-        WindowInsetsControllerCompat(activity.window, decor).hide(WindowInsetsCompat.Type.systemBars())
-        eventReporter?.invoke(BitwebcEvent.FullscreenChanged(fullscreen = true))
-        registerFullScreenBackPress()
     }
 
     override fun onHideCustomView() {
-        val decor = activity.findViewById<ViewGroup>(Window.ID_ANDROID_CONTENT)
-        fullScreenContainer?.let { container ->
-            decor.removeView(container)
+        if (customView == null && fullScreenContainer == null) {
+            super.onHideCustomView()
+            return
         }
+        val decor = activity.findViewById<ViewGroup>(Window.ID_ANDROID_CONTENT)
+        val container = fullScreenContainer
+        val callback = customViewCallback
+        val orientationToRestore = requestedOrientationBeforeFullscreen
+        val clearKeepScreenOn = keepScreenOnAddedByUs
+        val restoreSystemBars = systemBarsVisibleBeforeFullscreen
         fullScreenContainer = null
         customView = null
-        customViewCallback?.onCustomViewHidden()
         customViewCallback = null
         fullScreenBackCallback?.remove()
         fullScreenBackCallback = null
-
-        activity.requestedOrientation = requestedOrientationBeforeFullscreen
-        if (keepScreenOnAddedByUs) {
-            activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            keepScreenOnAddedByUs = false
+        keepScreenOnAddedByUs = false
+        requestedOrientationBeforeFullscreen = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        runCatching {
+            container?.let {
+                decor.removeView(it)
+                it.removeAllViews()
+            }
         }
-
-        val controller = WindowInsetsControllerCompat(activity.window, decor)
-        if (systemBarsVisibleBeforeFullscreen) {
-            controller.show(WindowInsetsCompat.Type.systemBars())
-        } else {
-            controller.hide(WindowInsetsCompat.Type.systemBars())
+        runCatching { activity.requestedOrientation = orientationToRestore }
+        if (clearKeepScreenOn) {
+            runCatching { activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         }
-        eventReporter?.invoke(BitwebcEvent.FullscreenChanged(fullscreen = false))
-        super.onHideCustomView()
+        runCatching {
+            val controller = WindowInsetsControllerCompat(activity.window, decor)
+            if (restoreSystemBars) {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            } else {
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+        runCatching { eventReporter?.invoke(BitwebcEvent.FullscreenChanged(fullscreen = false)) }
+        runCatching { callback?.onCustomViewHidden() }
     }
 
     fun release() {
-        if (customView != null) {
+        dismissActiveJsDialog()
+        runCatching { dialogProvider?.cancelPending() }
+        if (customView != null || fullScreenContainer != null) {
             onHideCustomView()
         }
         fullScreenBackCallback?.remove()
         fullScreenBackCallback = null
+    }
+
+    private fun showTrackedJsDialog(dialog: AlertDialog, cancelResult: () -> Unit) {
+        activeJsDialog = dialog
+        cancelActiveJsResult = cancelResult
+        dialog.setOnDismissListener {
+            if (activeJsDialog === dialog) {
+                val pendingCancel = cancelActiveJsResult
+                activeJsDialog = null
+                cancelActiveJsResult = null
+                runCatching { pendingCancel?.invoke() }
+            }
+        }
+        runCatching { dialog.show() }.onFailure {
+            if (activeJsDialog === dialog) {
+                activeJsDialog = null
+                cancelActiveJsResult = null
+                runCatching(cancelResult)
+            }
+            runCatching { dialog.dismiss() }
+        }
+    }
+
+    private fun completeJsDialog(dialog: AlertDialog, completeResult: () -> Unit) {
+        if (activeJsDialog === dialog) {
+            activeJsDialog = null
+            cancelActiveJsResult = null
+        }
+        runCatching(completeResult)
+    }
+
+    private fun dismissActiveJsDialog() {
+        val dialog = activeJsDialog
+        val cancelResult = cancelActiveJsResult
+        activeJsDialog = null
+        cancelActiveJsResult = null
+        runCatching { cancelResult?.invoke() }
+        runCatching { dialog?.dismiss() }
     }
 
     private fun registerFullScreenBackPress() {

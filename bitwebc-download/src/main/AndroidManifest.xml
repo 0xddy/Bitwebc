@@ -3,9 +3,14 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application>
         <provider
-            android:name=".BitwebcDownloadInit"
-            android:authorities="${applicationId}.bitwebc.download.init"
-            android:exported="false" />
+            android:name="cn.lmcw.bitwebc.download.BitwebcDownloadFileProvider"
+            android:authorities="${applicationId}.bitwebc.download.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/bitwebc_download_paths" />
+        </provider>
         <receiver
             android:name=".notification.DownloadNotificationReceiver"
             android:exported="false" />

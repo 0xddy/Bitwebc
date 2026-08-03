@@ -24,12 +24,14 @@ android {
 }
 
 dependencies {
-    implementation(project(":bitwebc-core"))
+    api(project(":bitwebc-core"))
+    api(libs.androidx.activity.ktx)
+    api(libs.okhttp)
+
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.okhttp)
+    testImplementation(libs.junit)
 }
 
 afterEvaluate {

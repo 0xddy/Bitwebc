@@ -1,9 +1,11 @@
 package cn.lmcw.bitwebc.core.ui
 
 import android.content.Context
+import android.os.Bundle
 import android.util.AttributeSet
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
+import androidx.annotation.MainThread
 import androidx.lifecycle.LifecycleOwner
 import cn.lmcw.bitwebc.core.dsl.BitwebcBuilder
 import cn.lmcw.bitwebc.core.dsl.BitwebcSession
@@ -17,15 +19,23 @@ class BitwebcView @JvmOverloads constructor(
 
     private var session: BitwebcSession? = null
 
+    /**
+     * When true this View owns the Session and releases it on detach. Hosts with an explicit
+     * disposal callback, such as Compose, set it to false and call [release] themselves.
+     */
+    var releaseOnDetach: Boolean = true
+
+    @MainThread
+    @JvmOverloads
     fun setup(
         activity: ComponentActivity,
         lifecycleOwner: LifecycleOwner = activity,
         block: BitwebcBuilder.() -> Unit
     ): BitwebcSession {
-        session?.release()
+        release()
         removeAllViews()
 
-        val builder = BitwebcBuilder(activity, lifecycleOwner)
+        val builder = BitwebcBuilder.create(activity, lifecycleOwner)
         builder.attachTo(this)
         builder.block()
         val newSession = builder.launch()
@@ -33,6 +43,7 @@ class BitwebcView @JvmOverloads constructor(
         return newSession
     }
 
+    @MainThread
     fun setup(
         fragment: androidx.fragment.app.Fragment,
         block: BitwebcBuilder.() -> Unit
@@ -42,13 +53,21 @@ class BitwebcView @JvmOverloads constructor(
         return setup(activity, fragment.viewLifecycleOwner, block)
     }
 
-    fun getSession(): BitwebcSession? = session
+    fun getSession(): BitwebcSession? = session?.takeUnless(BitwebcSession::isReleased)
 
-    fun getWebView(): android.webkit.WebView? = session?.webView
+    /** Saves WebView navigation history and scroll position into [outState]. */
+    @MainThread
+    fun saveState(outState: Bundle): Boolean = getSession()?.saveState(outState) == true
 
-    override fun onDetachedFromWindow() {
+    /** Releases the active session. Safe to call more than once. */
+    @MainThread
+    fun release() {
         session?.release()
         session = null
+    }
+
+    override fun onDetachedFromWindow() {
+        if (releaseOnDetach) release()
         super.onDetachedFromWindow()
     }
 }

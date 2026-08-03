@@ -61,8 +61,7 @@ class DownloadNotificationHelper(
             .setContentText(fileName)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
-            .setContentIntent(cancelPendingIntent)
-            .setAutoCancel(true)
+            .setAutoCancel(false)
             .addAction(cancelAction)
         if (totalBytes > 0) {
             val progress = ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 100)

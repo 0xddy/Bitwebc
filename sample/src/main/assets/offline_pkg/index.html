@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Bitwebc Demo - 离线包 + WebMessage</title>
+    <title>Bitwebc 离线资源示例</title>
     <style>
         body { font-family: sans-serif; padding: 20px; }
-        button { padding: 10px 14px; margin-right: 10px; margin-bottom: 10px; }
+        button { padding: 10px 14px; margin: 0 10px 10px 0; }
         .tip { color: #555; margin-top: 16px; }
         .section { margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee; }
         #webmessage-log { background: #f5f5f5; padding: 10px; min-height: 40px; font-size: 12px; }
@@ -14,65 +14,65 @@
     <script>
         function callNative() {
             if (window.BitwebcApp && window.BitwebcApp.showToast) {
-                window.BitwebcApp.showToast("你好，Bitwebc");
+                window.BitwebcApp.showToast("你好，Bitwebc").catch(console.error);
             } else {
-                alert("Bridge 未注入");
+                alert("Bridge 尚未注入");
             }
         }
 
         function onNativeReady(message) {
-            const el = document.getElementById("native-msg");
-            el.textContent = message;
+            document.getElementById("native-msg").textContent = message;
         }
 
-        // ---------- WebMessage 演示：接收 Native 传来的 port，双向收发 ----------
-        var messagePortFromNative = null;
-
-        window.addEventListener('message', function(event) {
-            if (event.ports && event.ports.length > 0) {
-                messagePortFromNative = event.ports[0];
-                logWebMessage('已收到 Native 传来的 MessagePort');
-                messagePortFromNative.onmessage = function(e) {
-                    logWebMessage('收到 Native 消息: ' + (e.data || '[无数据]'));
-                };
-                // 可选：主动发一条给 Native
-                messagePortFromNative.postMessage('ping from JS');
-            }
+        let messagePortFromNative = null;
+        window.addEventListener("message", function(event) {
+            if (!event.ports || event.ports.length === 0) return;
+            messagePortFromNative = event.ports[0];
+            logWebMessage("已收到 Native 传来的 MessagePort");
+            messagePortFromNative.onmessage = function(messageEvent) {
+                logWebMessage("收到 Native 消息：" + (messageEvent.data || "[无数据]"));
+            };
+            messagePortFromNative.postMessage("ping from JS");
         });
 
         function sendViaWebMessage() {
             if (!messagePortFromNative) {
-                logWebMessage('尚未收到 Native 的 port');
+                logWebMessage("尚未收到 Native MessagePort");
                 return;
             }
-            var msg = 'JS->Native @ ' + new Date().toLocaleTimeString();
-            messagePortFromNative.postMessage(msg);
-            logWebMessage('已发送: ' + msg);
+            const message = "JS → Native @ " + new Date().toLocaleTimeString();
+            messagePortFromNative.postMessage(message);
+            logWebMessage("已发送：" + message);
         }
 
         function logWebMessage(text) {
-            var el = document.getElementById("webmessage-log");
-            el.textContent = (el.textContent ? el.textContent + '\n' : '') + text;
+            const element = document.getElementById("webmessage-log");
+            element.textContent = (element.textContent ? element.textContent + "\n" : "") + text;
         }
 
         function triggerDownload() {
-            window.location.href = 'https://storage.7x24cc.com/storage-server/presigned/ss1/a6-online-fileupload/newMediaFile/3304B15_773_20260225newMediaFile.mp4';
+            const link = document.createElement("a");
+            link.href = "data:text/plain;charset=utf-8," + encodeURIComponent("Bitwebc download demo");
+            link.download = "bitwebc-demo.txt";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
         }
     </script>
 </head>
 <body>
-<h2>Bitwebc 示例（离线包拦截 + WebMessage）</h2>
-<p class="tip">本页通过 <strong>静态资源拦截</strong> 从 assets/offline_pkg/ 加载，未走网络。</p>
+<h2>Bitwebc 离线资源示例</h2>
+<p class="tip">本页面由 resources → assets 从应用资源加载，没有访问网络。</p>
 
 <button onclick="callNative()">JS 调用 Native Toast</button>
-<button onclick="triggerDownload()">网页内触发下载示例视频</button>
+<button onclick="triggerDownload()">触发下载</button>
 <input type="file" multiple />
-<p class="tip">Native 注入消息：<span id="native-msg">等待中...</span></p>
+<p class="tip">Native 状态：<span id="native-msg">等待中……</span></p>
 
 <div class="section">
     <h3>WebMessage 双向通道</h3>
-    <button onclick="sendViaWebMessage()">通过 WebMessage 发往 Native</button>
-    <pre id="webmessage-log">等待 Native 建立 MessagePort...</pre>
+    <button onclick="sendViaWebMessage()">向 Native 发送消息</button>
+    <pre id="webmessage-log">等待 Native 建立 MessagePort……</pre>
 </div>
 </body>
 </html>

@@ -1,47 +1,91 @@
 package cn.lmcw.bitwebc.core.bridge
 
+import android.annotation.SuppressLint
 import android.net.Uri
 import android.webkit.WebView
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebMessagePortCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import java.net.URI
+import java.util.Locale
 
-/** WebMessagePort 封装，用于 postMessage / channel 通信 */
+/** WebMessagePort wrapper for postMessage/channel communication. */
 object BitwebcWebMessagePort {
 
     /**
-     * 内核支持时创建 Message Channel 并调用 setup。
+     * Creates and transfers a message channel when the page has a valid HTTP(S) origin.
      *
-     * @param setup 回调参数：
-     *   - `nativePort`（ports[0]）：Native 端持有，用于收发消息
-     *   - `jsPort`（ports[1]）：将被传给 JS 端，Native 端不应再直接使用
+     * [setup] receives the native port followed by the port that will be transferred to JS.
+     * No channel is created for opaque, malformed, or unsupported page URLs.
      */
     @JvmStatic
+    @SuppressLint("RequiresFeature")
     fun setupOnPageFinished(
         webView: WebView,
         pageUrl: String?,
         setup: (nativePort: WebMessagePortCompat, jsPort: WebMessagePortCompat) -> Unit
     ) {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.CREATE_WEB_MESSAGE_CHANNEL)) return
-        val ports = WebViewCompat.createWebMessageChannel(webView) ?: return
-        if (ports.size < 2) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.CREATE_WEB_MESSAGE_CHANNEL) ||
+            !WebViewFeature.isFeatureSupported(WebViewFeature.POST_WEB_MESSAGE)
+        ) {
+            return
+        }
+
+        val targetOrigin = webMessageTargetOrigin(pageUrl)?.let(Uri::parse) ?: return
+        val ports = runCatching { WebViewCompat.createWebMessageChannel(webView) }.getOrNull()
+            ?: return
+        if (ports.size < 2) {
+            ports.forEach { it.closePortQuietly() }
+            return
+        }
+
         val nativePort = ports[0]
         val jsPort = ports[1]
-        setup(nativePort, jsPort)
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.POST_WEB_MESSAGE)) return
-        val origin = pageUrl?.let { toOrigin(it) } ?: Uri.parse("https://localhost")
-        WebViewCompat.postWebMessage(webView, WebMessageCompat(null, arrayOf(jsPort)), origin)
+        try {
+            setup(nativePort, jsPort)
+            WebViewCompat.postWebMessage(
+                webView,
+                WebMessageCompat(null, arrayOf(jsPort)),
+                targetOrigin
+            )
+        } catch (_: Exception) {
+            nativePort.closePortQuietly()
+            jsPort.closePortQuietly()
+        }
     }
 
-    private fun toOrigin(url: String): Uri {
-        return runCatching {
-            val u = Uri.parse(url)
-            Uri.Builder()
-                .scheme(u.scheme ?: "https")
-                .authority(u.host ?: "localhost")
-                .path("")
-                .build()
-        }.getOrElse { Uri.parse("https://localhost") }
+    private fun WebMessagePortCompat.closePortQuietly() {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_PORT_CLOSE)) {
+            runCatching { close() }
+        }
+    }
+}
+
+internal fun webMessageTargetOrigin(pageUrl: String?): String? {
+    if (pageUrl.isNullOrBlank()) return null
+    val uri = runCatching { URI(pageUrl) }.getOrNull() ?: return null
+    if (uri.isOpaque) return null
+
+    val scheme = uri.scheme?.lowercase(Locale.ROOT)
+        ?.takeIf { it == "http" || it == "https" }
+        ?: return null
+    val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
+    val port = uri.port
+    if (port !in -1..65535) return null
+
+    val originHost = when {
+        host.startsWith("[") && host.endsWith("]") -> host
+        ':' in host -> "[$host]"
+        else -> host.lowercase(Locale.ROOT)
+    }
+    return buildString {
+        append(scheme)
+        append("://")
+        append(originHost)
+        if (port >= 0) {
+            append(':')
+            append(port)
+        }
     }
 }

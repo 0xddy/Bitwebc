@@ -6,94 +6,201 @@ internal class PermissionRequestDispatcher(
     private val launchSinglePermission: (String) -> Unit,
     private val launchMultiplePermissions: (Array<String>) -> Unit
 ) {
-    private data class SinglePermissionRequest(
-        val requestId: Int,
-        val permission: String,
-        val onResult: (Boolean) -> Unit
-    )
-
-    private data class MultiplePermissionsRequest(
-        val requestId: Int,
-        val permissions: Array<String>,
-        val onResult: (Map<String, Boolean>) -> Unit
-    )
-
-    private val requestIdGenerator = AtomicInteger(0)
-    private val singlePermissionQueue = ArrayDeque<SinglePermissionRequest>()
-    private val multiplePermissionsQueue = ArrayDeque<MultiplePermissionsRequest>()
-    private var activeSinglePermissionRequest: SinglePermissionRequest? = null
-    private var activeMultiplePermissionsRequest: MultiplePermissionsRequest? = null
-
-    fun enqueueSingle(permission: String, onResult: (Boolean) -> Unit) {
-        val requestId = requestIdGenerator.incrementAndGet()
-        singlePermissionQueue.addLast(
-            SinglePermissionRequest(
-                requestId = requestId,
-                permission = permission,
-                onResult = onResult
-            )
-        )
-        launchNextSinglePermissionRequest()
+    internal fun interface Cancellation {
+        fun cancel()
     }
 
-    fun enqueueMultiple(permissions: Array<String>, onResult: (Map<String, Boolean>) -> Unit) {
+    private sealed class PendingRequest {
+        abstract val requestId: Int
+        var completed: Boolean = false
+
+        abstract fun deniedCallback(): () -> Unit
+        abstract fun launch(
+            launchSinglePermission: (String) -> Unit,
+            launchMultiplePermissions: (Array<String>) -> Unit
+        )
+    }
+
+    private data class SinglePermissionRequest(
+        override val requestId: Int,
+        val permission: String,
+        val onResult: (Boolean) -> Unit
+    ) : PendingRequest() {
+        override fun deniedCallback(): () -> Unit = { onResult(false) }
+
+        override fun launch(
+            launchSinglePermission: (String) -> Unit,
+            launchMultiplePermissions: (Array<String>) -> Unit
+        ) {
+            launchSinglePermission(permission)
+        }
+    }
+
+    private data class MultiplePermissionsRequest(
+        override val requestId: Int,
+        val permissions: Array<String>,
+        val onResult: (Map<String, Boolean>) -> Unit
+    ) : PendingRequest() {
+        override fun deniedCallback(): () -> Unit = {
+            onResult(permissions.associateWith { false })
+        }
+
+        override fun launch(
+            launchSinglePermission: (String) -> Unit,
+            launchMultiplePermissions: (Array<String>) -> Unit
+        ) {
+            launchMultiplePermissions(permissions)
+        }
+    }
+
+    private val requestIdGenerator = AtomicInteger(0)
+    private val lock = Any()
+    private val requestQueue = ArrayDeque<PendingRequest>()
+    private var activeRequest: PendingRequest? = null
+
+    fun enqueueSingle(permission: String, onResult: (Boolean) -> Unit): Cancellation {
+        val requestId = requestIdGenerator.incrementAndGet()
+        val request = SinglePermissionRequest(
+            requestId = requestId,
+            permission = permission,
+            onResult = onResult
+        )
+        synchronized(lock) {
+            requestQueue.addLast(request)
+        }
+        launchNextRequest()
+        return Cancellation { cancel(requestId) }
+    }
+
+    fun enqueueMultiple(
+        permissions: Array<String>,
+        onResult: (Map<String, Boolean>) -> Unit
+    ): Cancellation {
         if (permissions.isEmpty()) {
             onResult(emptyMap())
-            return
+            return Cancellation {}
         }
         val requestId = requestIdGenerator.incrementAndGet()
-        multiplePermissionsQueue.addLast(
-            MultiplePermissionsRequest(
-                requestId = requestId,
-                permissions = permissions,
-                onResult = onResult
-            )
+        val request = MultiplePermissionsRequest(
+            requestId = requestId,
+            permissions = permissions.copyOf(),
+            onResult = onResult
         )
-        launchNextMultiplePermissionsRequest()
+        synchronized(lock) {
+            requestQueue.addLast(request)
+        }
+        launchNextRequest()
+        return Cancellation { cancel(requestId) }
     }
 
     fun onSinglePermissionResult(granted: Boolean) {
-        val request = activeSinglePermissionRequest ?: return
-        activeSinglePermissionRequest = null
-        request.onResult(granted)
-        launchNextSinglePermissionRequest()
+        val callback = synchronized(lock) {
+            val request = activeRequest as? SinglePermissionRequest
+                ?: return@synchronized null
+            activeRequest = null
+            if (request.completed) {
+                null
+            } else {
+                request.completed = true
+                { request.onResult(granted) }
+            }
+        }
+        invokeCallbackThenLaunchNext(callback)
     }
 
     fun onMultiplePermissionsResult(result: Map<String, Boolean>) {
-        val request = activeMultiplePermissionsRequest ?: return
-        activeMultiplePermissionsRequest = null
-        request.onResult(result)
-        launchNextMultiplePermissionsRequest()
+        val callback = synchronized(lock) {
+            val request = activeRequest as? MultiplePermissionsRequest
+                ?: return@synchronized null
+            activeRequest = null
+            if (request.completed) {
+                null
+            } else {
+                request.completed = true
+                { request.onResult(result) }
+            }
+        }
+        invokeCallbackThenLaunchNext(callback)
     }
 
     fun cancelAllPendingAsDenied() {
-        activeSinglePermissionRequest?.onResult(false)
-        activeSinglePermissionRequest = null
-        while (singlePermissionQueue.isNotEmpty()) {
-            singlePermissionQueue.removeFirst().onResult(false)
+        val callbacks = synchronized(lock) {
+            buildList {
+                activeRequest?.let { request ->
+                    if (!request.completed) {
+                        request.completed = true
+                        add(request.deniedCallback())
+                    }
+                }
+                while (requestQueue.isNotEmpty()) {
+                    val request = requestQueue.removeFirst()
+                    if (!request.completed) {
+                        request.completed = true
+                        add(request.deniedCallback())
+                    }
+                }
+            }
         }
-
-        activeMultiplePermissionsRequest?.let { request ->
-            request.onResult(request.permissions.associateWith { false })
-        }
-        activeMultiplePermissionsRequest = null
-        while (multiplePermissionsQueue.isNotEmpty()) {
-            val request = multiplePermissionsQueue.removeFirst()
-            request.onResult(request.permissions.associateWith { false })
+        callbacks.forEach { callback ->
+            runCatching { callback() }
         }
     }
 
-    private fun launchNextSinglePermissionRequest() {
-        if (activeSinglePermissionRequest != null) return
-        val next = singlePermissionQueue.removeFirstOrNull() ?: return
-        activeSinglePermissionRequest = next
-        launchSinglePermission(next.permission)
+    private fun cancel(requestId: Int) {
+        val callback = synchronized(lock) {
+            val request = when {
+                activeRequest?.requestId == requestId -> activeRequest
+                else -> requestQueue.firstOrNull { it.requestId == requestId }?.also {
+                    requestQueue.remove(it)
+                }
+            } ?: return@synchronized null
+
+            if (request.completed) {
+                null
+            } else {
+                request.completed = true
+                request.deniedCallback()
+            }
+        }
+        if (callback != null) {
+            runCatching { callback() }
+        }
+        launchNextRequest()
     }
 
-    private fun launchNextMultiplePermissionsRequest() {
-        if (activeMultiplePermissionsRequest != null) return
-        val next = multiplePermissionsQueue.removeFirstOrNull() ?: return
-        activeMultiplePermissionsRequest = next
-        launchMultiplePermissions(next.permissions)
+    private fun launchNextRequest() {
+        val next = synchronized(lock) {
+            if (activeRequest != null) return
+            requestQueue.removeFirstOrNull()?.also { activeRequest = it }
+        } ?: return
+
+        try {
+            next.launch(launchSinglePermission, launchMultiplePermissions)
+        } catch (_: Exception) {
+            onLaunchFailed(next.requestId)
+        }
+    }
+
+    private fun onLaunchFailed(requestId: Int) {
+        val callback = synchronized(lock) {
+            val request = activeRequest?.takeIf { it.requestId == requestId }
+                ?: return@synchronized null
+            activeRequest = null
+            if (request.completed) {
+                null
+            } else {
+                request.completed = true
+                request.deniedCallback()
+            }
+        }
+        invokeCallbackThenLaunchNext(callback)
+    }
+
+    private fun invokeCallbackThenLaunchNext(callback: (() -> Unit)?) {
+        try {
+            callback?.invoke()
+        } finally {
+            launchNextRequest()
+        }
     }
 }
